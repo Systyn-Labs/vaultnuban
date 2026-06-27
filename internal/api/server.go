@@ -92,8 +92,12 @@ func NewRouter(deps Dependencies) http.Handler {
 	// Nomba webhook — no tenant auth, HMAC-verified inside the handler (FR-4)
 	r.Post("/webhooks/nomba", webhookH.HandleNombaWebhook)
 
-	// Internal cron endpoint — authenticated via INTERNAL_SWEEP_TOKEN (FR-6)
+	// Internal cron endpoint — authenticated via INTERNAL_SWEEP_TOKEN (FR-6).
+	// HEAD is registered alongside GET so UptimeRobot free plan can trigger it
+	// (free plan only supports HEAD). Chi runs the handler for HEAD but strips
+	// the response body, so the sweep still executes.
 	r.Get("/internal/sweep", sweepH.HandleSweep)
+	r.Head("/internal/sweep", sweepH.HandleSweep)
 
 	return r
 }
