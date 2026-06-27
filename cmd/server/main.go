@@ -63,6 +63,7 @@ func main() {
 	txnRepo := postgres.NewTransactionRepo(pool)
 	webhookRepo := postgres.NewWebhookRepo(pool)
 	suspenseRepo := postgres.NewSuspenseRepo(pool)
+	sweepRepo := postgres.NewSweepRepo(pool)
 
 	// ── Provider ──────────────────────────────────────────────────────────────
 	prov := nomba.New(
@@ -78,11 +79,15 @@ func main() {
 	customerSvc := service.NewCustomerService(customerRepo, auditRepo)
 	provisioningSvc := service.NewProvisioningService(customerRepo, vaRepo, auditRepo, prov)
 
-	// ── Reconciliation worker ─────────────────────────────────────────────────
+	// ── Reconciliation worker + sweep ─────────────────────────────────────────
 	matcher := recon.NewMatcher(vaRepo, txnRepo, cfg.TierLimits)
 	worker := recon.NewWorker(512, matcher, txnRepo, webhookRepo, suspenseRepo, customerRepo)
+	sweepRunner := recon.NewSweepRunner(prov, txnRepo, sweepRepo, worker, cfg.SweepInterval, cfg.SweepOverlap)
 
 	go worker.Run(ctx)
+
+	logger.Logf("SweepRunner", "configured — interval=%s overlap=%s",
+		cfg.SweepInterval, cfg.SweepOverlap)
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
 	deps := api.Dependencies{
@@ -93,6 +98,8 @@ func main() {
 		Provisioning: provisioningSvc,
 		Provider:     prov,
 		Worker:       worker,
+		Sweep:        sweepRunner,
+		SweepToken:   cfg.InternalSweepToken,
 	}
 
 	router := api.NewRouter(deps)

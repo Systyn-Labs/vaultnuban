@@ -25,6 +25,8 @@ type Dependencies struct {
 	Provisioning *service.ProvisioningService
 	Provider     provider.Provider
 	Worker       *recon.Worker
+	Sweep        *recon.SweepRunner
+	SweepToken   string
 }
 
 // NewRouter builds and returns the fully configured chi router.
@@ -44,6 +46,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	customerH := handlers.NewCustomerHandler(deps.CustomerSvc)
 	vaH := handlers.NewVAHandler(deps.Provisioning)
 	webhookH := handlers.NewWebhookHandler(deps.Provider, deps.WebhookStore, deps.Worker)
+	sweepH := handlers.NewSweepHandler(deps.Sweep, deps.SweepToken)
 
 	// Authenticated tenant API
 	r.Group(func(r chi.Router) {
@@ -81,8 +84,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	// Nomba webhook — no tenant auth, HMAC-verified inside the handler (FR-4)
 	r.Post("/webhooks/nomba", webhookH.HandleNombaWebhook)
 
-	// Internal cron endpoint — authenticated via INTERNAL_SWEEP_TOKEN (Phase 5)
-	r.Get("/internal/sweep", notImplemented)
+	// Internal cron endpoint — authenticated via INTERNAL_SWEEP_TOKEN (FR-6)
+	r.Get("/internal/sweep", sweepH.HandleSweep)
 
 	return r
 }

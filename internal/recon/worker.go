@@ -246,6 +246,107 @@ func koboToNaira(kobo int64) string {
 	return fmt.Sprintf("%d.%02d", naira, kobo%100)
 }
 
+// ProcessResult is returned by ProcessDirect so callers (e.g. sweep) can tally counts.
+type ProcessResult struct {
+	Skipped   bool // transaction already existed in the ledger
+	Posted    bool // new debit/credit posted to a customer wallet
+	Suspensed bool // new credit posted to the suspense account
+}
+
+// ProcessDirect runs the full processing pipeline synchronously, bypassing the
+// internal channel. Used by the sweep runner so it can tally counts accurately.
+func (w *Worker) ProcessDirect(ctx context.Context, item WorkItem) (ProcessResult, error) {
+	pt := item.Payload.Transaction
+
+	// Check existence first to avoid redundant work.
+	existing, err := w.txns.GetTransaction(ctx, pt.TransactionID)
+	if err != nil {
+		return ProcessResult{}, fmt.Errorf("ProcessDirect: check existing: %w", err)
+	}
+	if existing != nil {
+		return ProcessResult{Skipped: true}, nil
+	}
+
+	switch item.Payload.EventType {
+	case "payment_success":
+		result, suspensed, err := w.processCreditDirect(ctx, item, pt)
+		return ProcessResult{Posted: result, Suspensed: suspensed}, err
+	case "payment_reversal":
+		if err := w.processReversal(ctx, item, pt); err != nil {
+			return ProcessResult{}, err
+		}
+		return ProcessResult{Posted: true}, nil
+	default:
+		return ProcessResult{Skipped: true}, nil
+	}
+}
+
+// processCreditDirect is the synchronous credit path; returns (posted, suspensed, err).
+func (w *Worker) processCreditDirect(ctx context.Context, item WorkItem, pt provider.ProviderTransaction) (bool, bool, error) {
+	result, err := w.matcher.Match(ctx, pt)
+	if err != nil {
+		return false, false, fmt.Errorf("match: %w", err)
+	}
+
+	if result.Suspense == nil && result.CustomerID != "" {
+		customer, err := w.customers.GetCustomer(ctx, "", result.CustomerID)
+		if err == nil && customer != nil && customer.Identity != nil {
+			walletAccount := domain.CustomerWalletAccount(result.CustomerID)
+			reason, err := w.matcher.CheckTierLimitsForCustomer(
+				ctx, walletAccount, pt.AmountKobo, customer.Identity.KYCTier,
+			)
+			if err != nil {
+				return false, false, fmt.Errorf("tier check: %w", err)
+			}
+			if reason != "" {
+				entries, err := ledger.CreditSuspense(pt.TransactionID, pt.AmountKobo)
+				if err != nil {
+					return false, false, err
+				}
+				result.Entries = entries
+				result.Suspense = &domain.SuspenseItem{
+					TransactionID: pt.TransactionID,
+					Reason:        reason,
+					Status:        "open",
+				}
+				result.CustomerID = ""
+			}
+		}
+	}
+
+	vaID := toPtr(result.VA)
+	tx := &domain.Transaction{
+		ID:               pt.TransactionID,
+		VirtualAccountID: vaID,
+		SessionID:        nullStr(pt.SessionID),
+		AmountKobo:       pt.AmountKobo,
+		Direction:        "credit",
+		Source:           item.Source,
+		Status:           "posted",
+		SenderName:       nullStr(pt.SenderName),
+		SenderBank:       nullStr(pt.SenderBank),
+		Narration:        nullStr(pt.Narration),
+		Raw:              pt.Raw,
+		OccurredAt:       pt.OccurredAt,
+	}
+
+	created, err := w.txns.PostTransaction(ctx, tx, result.Entries)
+	if err != nil {
+		return false, false, fmt.Errorf("post transaction: %w", err)
+	}
+	if !created {
+		return false, false, nil // race with webhook; already posted
+	}
+
+	suspensed := result.Suspense != nil
+	if suspensed {
+		if err := w.suspense.CreateSuspenseItem(ctx, result.Suspense); err != nil {
+			logger.Errorf(workerCtx, "create suspense item for %s: %v", pt.TransactionID, err)
+		}
+	}
+	return true, suspensed, nil
+}
+
 // NewWorkItemFromProviderTx creates a WorkItem for the sweep to enqueue.
 func NewWorkItemFromProviderTx(pt provider.ProviderTransaction, source string) WorkItem {
 	raw, _ := json.Marshal(pt)
