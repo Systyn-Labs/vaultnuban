@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/systynlabs/vaultnuban/internal/api"
 	"github.com/systynlabs/vaultnuban/internal/config"
+	"github.com/systynlabs/vaultnuban/internal/logger"
 	"github.com/systynlabs/vaultnuban/internal/provider/nomba"
 	"github.com/systynlabs/vaultnuban/internal/recon"
 	"github.com/systynlabs/vaultnuban/internal/service"
@@ -25,35 +25,35 @@ func main() {
 
 	cfg, err := config.Load()
 	if err != nil {
-		log.Printf("config error: %v", err)
+		logger.Errorf("Bootstrap", "config error: %v", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("VaultNUBAN starting — env=%s port=%s base_url=%s\n",
+	logger.Logf("Bootstrap", "starting — env=%s port=%s base_url=%s",
 		cfg.Env, cfg.Port, cfg.NombaBaseURL)
 
 	// ── Postgres ──────────────────────────────────────────────────────────────
 	pool, err := store.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
-		log.Printf("database error: %v", err)
+		logger.Errorf("Bootstrap", "database error: %v", err)
 		os.Exit(1)
 	}
 	defer pool.Close()
 
 	if err := store.RunMigrations(ctx, pool); err != nil {
-		log.Printf("migration error: %v", err)
+		logger.Errorf("Bootstrap", "migration error: %v", err)
 		os.Exit(1)
 	}
-	log.Println("migrations applied")
+	logger.Log("MigrationRunner", "all migrations applied successfully")
 
 	// ── Redis ─────────────────────────────────────────────────────────────────
 	rdb, err := store.OpenRedis(ctx, cfg.RedisURL)
 	if err != nil {
-		log.Printf("redis error: %v", err)
+		logger.Errorf("Bootstrap", "redis error: %v", err)
 		os.Exit(1)
 	}
 	defer rdb.Close()
-	log.Println("redis connected")
+	logger.Log("RedisClient", "connection established")
 
 	// ── Repos ─────────────────────────────────────────────────────────────────
 	tenantRepo := postgres.NewTenantRepo(pool)
@@ -72,6 +72,7 @@ func main() {
 		cfg.NombaAccountID,
 		cfg.NombaWebhookSecret,
 	)
+	logger.Logf("NombaProvider", "configured — base_url=%s", cfg.NombaBaseURL)
 
 	// ── Services ──────────────────────────────────────────────────────────────
 	customerSvc := service.NewCustomerService(customerRepo, auditRepo)
@@ -107,20 +108,23 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("listening on :%s", cfg.Port)
+		logger.Logf("RouterExplorer", "listening on :%s", cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("server error: %v", err)
+			logger.Errorf("HttpServer", "fatal: %v", err)
 		}
 	}()
 
+	logger.Log("VaultNUBAN", "application started successfully")
+
 	<-quit
-	log.Println("shutting down...")
-	cancel() // stop worker
+	logger.Warn("VaultNUBAN", "shutdown signal received")
+	cancel()
 
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutCancel()
 	if err := srv.Shutdown(shutCtx); err != nil {
-		log.Printf("shutdown error: %v", err)
+		logger.Errorf("HttpServer", "shutdown error: %v", err)
 	}
-	log.Println("stopped")
+	logger.Log("VaultNUBAN", "application stopped")
+	fmt.Println()
 }

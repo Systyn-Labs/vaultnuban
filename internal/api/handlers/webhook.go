@@ -2,18 +2,21 @@ package handlers
 
 import (
 	"io"
-	"log"
 	"net/http"
 	"time"
 
 	"github.com/systynlabs/vaultnuban/internal/api/problem"
 	"github.com/systynlabs/vaultnuban/internal/domain"
+	"github.com/systynlabs/vaultnuban/internal/logger"
 	"github.com/systynlabs/vaultnuban/internal/provider"
 	"github.com/systynlabs/vaultnuban/internal/recon"
 	"github.com/systynlabs/vaultnuban/internal/store"
 )
 
-const replayWindowSeconds = 300 // 5 minutes (FR-4.2)
+const (
+	webhookCtx          = "WebhookIngestor"
+	replayWindowSeconds = 300 // 5 minutes (FR-4.2)
+)
 
 // WebhookHandler handles POST /webhooks/nomba.
 type WebhookHandler struct {
@@ -31,15 +34,14 @@ func NewWebhookHandler(
 }
 
 // HandleNombaWebhook is the ingestor entry-point (FR-4).
-// It must respond within 5 seconds (FR-4.4); all side effects are async.
+// Must respond within 5 seconds (FR-4.4); all side effects are async.
 func (h *WebhookHandler) HandleNombaWebhook(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1 MB max
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
 		problem.BadRequest(w, "failed to read body")
 		return
 	}
 
-	// Collect Nomba signature headers
 	headers := map[string]string{
 		"nomba-signature":           r.Header.Get("nomba-signature"),
 		"nomba-signature-algorithm": r.Header.Get("nomba-signature-algorithm"),
@@ -47,30 +49,26 @@ func (h *WebhookHandler) HandleNombaWebhook(w http.ResponseWriter, r *http.Reque
 		"nomba-timestamp":           r.Header.Get("nomba-timestamp"),
 	}
 
-	// FR-4.1: signature verification (constant-time inside the provider)
-	sigErr := h.prov.VerifyWebhookSignature(r.Context(), headers, body)
-	signatureValid := sigErr == nil
-
-	if !signatureValid {
-		log.Printf("webhook: invalid signature: %v", sigErr)
+	// FR-4.1: signature verification
+	if err := h.prov.VerifyWebhookSignature(r.Context(), headers, body); err != nil {
+		logger.Warnf(webhookCtx, "invalid signature: %v", err)
 		problem.Unauthorized(w, "invalid webhook signature")
 		return
 	}
 
-	// FR-4.2: replay window — reject stale timestamps
+	// FR-4.2: replay window
 	if ts := headers["nomba-timestamp"]; ts != "" {
 		if age := timestampAge(ts); age > replayWindowSeconds {
-			log.Printf("webhook: stale timestamp (%ds old)", age)
+			logger.Warnf(webhookCtx, "stale timestamp rejected (%ds old)", age)
 			problem.Unauthorized(w, "webhook timestamp outside replay window")
 			return
 		}
 	}
 
-	// Parse the event to extract transactionId and event_type for dedupe key
 	payload, err := h.prov.ParseWebhook(r.Context(), body)
 	if err != nil {
-		log.Printf("webhook: parse error: %v", err)
-		// Store as unknown but acknowledge — FR-4.5
+		logger.Warnf(webhookCtx, "parse error: %v", err)
+		// Unknown structure — ack so Nomba doesn't retry; FR-4.5
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -78,28 +76,30 @@ func (h *WebhookHandler) HandleNombaWebhook(w http.ResponseWriter, r *http.Reque
 	dedupeKey := payload.Transaction.TransactionID + ":" + payload.EventType
 
 	evt := &domain.WebhookEvent{
-		DedupeKey:     dedupeKey,
-		EventType:     payload.EventType,
-		SignatureValid: signatureValid,
-		Status:        "received",
-		Payload:       body,
+		DedupeKey:      dedupeKey,
+		EventType:      payload.EventType,
+		SignatureValid: true,
+		Status:         "received",
+		Payload:        body,
 	}
 
-	// FR-4.3: dedupe insert — duplicate delivery acks with 200, no reprocessing
+	// FR-4.3: dedupe insert
 	inserted, err := h.webhooks.InsertWebhookEvent(r.Context(), evt)
 	if err != nil {
-		log.Printf("webhook: insert event error: %v", err)
-		// Return 500 so Nomba retries — we haven't processed yet
+		logger.Errorf(webhookCtx, "insert event error for %s: %v", dedupeKey, err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	if !inserted {
-		// Duplicate delivery: ack and do nothing
-		log.Printf("webhook: duplicate delivery for %s, acking", dedupeKey)
+		// Duplicate delivery — ack and do nothing (FR-4.3)
+		logger.Debugf(webhookCtx, "duplicate delivery for %s — acking without reprocessing", dedupeKey)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
+
+	logger.Logf(webhookCtx, "received %s event for txn %s",
+		payload.EventType, payload.Transaction.TransactionID)
 
 	// FR-4.4: ack immediately, process asynchronously
 	w.WriteHeader(http.StatusOK)
@@ -111,37 +111,14 @@ func (h *WebhookHandler) HandleNombaWebhook(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-// timestampAge parses a Unix-second timestamp string and returns its age in seconds.
-// Returns 0 on parse error (let it through; the signature check is the primary guard).
+// timestampAge parses a Unix-second string and returns its age in seconds.
 func timestampAge(ts string) int64 {
 	var unix int64
-	if _, err := nativeSscanf(ts, &unix); err != nil {
-		return 0
+	for _, c := range ts {
+		if c < '0' || c > '9' {
+			return 0
+		}
+		unix = unix*10 + int64(c-'0')
 	}
 	return time.Now().Unix() - unix
-}
-
-func nativeSscanf(ts string, out *int64) (int, error) {
-	var n int64
-	_, err := scanInt(ts, &n)
-	if err != nil {
-		return 0, err
-	}
-	*out = n
-	return 1, nil
-}
-
-func scanInt(s string, out *int64) (int, error) {
-	if len(s) == 0 {
-		return 0, io.ErrUnexpectedEOF
-	}
-	var n int64
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0, io.ErrUnexpectedEOF
-		}
-		n = n*10 + int64(c-'0')
-	}
-	*out = n
-	return len(s), nil
 }

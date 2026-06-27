@@ -35,6 +35,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	r.Use(chimw.RealIP)
 	r.Use(chimw.Recoverer)
 	r.Use(middleware.RequestID)
+	r.Use(middleware.Logger)
 
 	// Infra endpoints — no auth
 	r.Get("/healthz", handleHealthz)
