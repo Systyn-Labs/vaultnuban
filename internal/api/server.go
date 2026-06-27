@@ -18,15 +18,19 @@ import (
 
 // Dependencies groups every external dependency the API needs.
 type Dependencies struct {
-	TenantStore  store.TenantStore
-	WebhookStore store.WebhookEventStore
-	Redis        *redis.Client
-	CustomerSvc  *service.CustomerService
-	Provisioning *service.ProvisioningService
-	Provider     provider.Provider
-	Worker       *recon.Worker
-	Sweep        *recon.SweepRunner
-	SweepToken   string
+	TenantStore   store.TenantStore
+	WebhookStore  store.WebhookEventStore
+	CustomerStore store.CustomerStore
+	TxnStore      store.TransactionStore
+	VAStore       store.VirtualAccountStore
+	Redis         *redis.Client
+	CustomerSvc   *service.CustomerService
+	Provisioning  *service.ProvisioningService
+	SuspenseSvc   *service.SuspenseService
+	Provider      provider.Provider
+	Worker        *recon.Worker
+	Sweep         *recon.SweepRunner
+	SweepToken    string
 }
 
 // NewRouter builds and returns the fully configured chi router.
@@ -47,6 +51,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	vaH := handlers.NewVAHandler(deps.Provisioning)
 	webhookH := handlers.NewWebhookHandler(deps.Provider, deps.WebhookStore, deps.Worker)
 	sweepH := handlers.NewSweepHandler(deps.Sweep, deps.SweepToken)
+	txnH := handlers.NewTransactionHandler(deps.TxnStore, deps.VAStore, deps.CustomerStore)
+	suspenseH := handlers.NewSuspenseHandler(deps.SuspenseSvc)
 
 	// Authenticated tenant API
 	r.Group(func(r chi.Router) {
@@ -68,13 +74,13 @@ func NewRouter(deps Dependencies) http.Handler {
 				r.Delete("/virtual-account", vaH.DeleteVA)
 
 				// Transactions (Phase 6)
-				r.Get("/transactions", notImplemented)
-				r.Get("/statement", notImplemented)
+				r.Get("/transactions", txnH.ListTransactions)
+				r.Get("/statement", txnH.GetStatement)
 			})
 
 			// Suspense (Phase 6)
-			r.Get("/suspense", notImplemented)
-			r.Post("/suspense/{itemID}/resolve", notImplemented)
+			r.Get("/suspense", suspenseH.ListSuspense)
+			r.Post("/suspense/{itemID}/resolve", suspenseH.ResolveSuspense)
 
 			// Webhook relay registration (P1 / Phase 10)
 			r.Post("/webhook-endpoints", notImplemented)

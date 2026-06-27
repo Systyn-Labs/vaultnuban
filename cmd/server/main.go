@@ -78,6 +78,7 @@ func main() {
 	// ── Services ──────────────────────────────────────────────────────────────
 	customerSvc := service.NewCustomerService(customerRepo, auditRepo)
 	provisioningSvc := service.NewProvisioningService(customerRepo, vaRepo, auditRepo, prov)
+	suspenseSvc := service.NewSuspenseService(suspenseRepo, txnRepo, customerRepo, vaRepo, auditRepo)
 
 	// ── Reconciliation worker + sweep ─────────────────────────────────────────
 	matcher := recon.NewMatcher(vaRepo, txnRepo, cfg.TierLimits)
@@ -91,15 +92,19 @@ func main() {
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
 	deps := api.Dependencies{
-		TenantStore:  tenantRepo,
-		WebhookStore: webhookRepo,
-		Redis:        rdb,
-		CustomerSvc:  customerSvc,
-		Provisioning: provisioningSvc,
-		Provider:     prov,
-		Worker:       worker,
-		Sweep:        sweepRunner,
-		SweepToken:   cfg.InternalSweepToken,
+		TenantStore:   tenantRepo,
+		WebhookStore:  webhookRepo,
+		CustomerStore: customerRepo,
+		TxnStore:      txnRepo,
+		VAStore:       vaRepo,
+		Redis:         rdb,
+		CustomerSvc:   customerSvc,
+		Provisioning:  provisioningSvc,
+		SuspenseSvc:   suspenseSvc,
+		Provider:      prov,
+		Worker:        worker,
+		Sweep:         sweepRunner,
+		SweepToken:    cfg.InternalSweepToken,
 	}
 
 	router := api.NewRouter(deps)
