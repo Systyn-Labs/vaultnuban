@@ -8,14 +8,18 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/systynlabs/vaultnuban/internal/api/handlers"
 	"github.com/systynlabs/vaultnuban/internal/api/middleware"
+	"github.com/systynlabs/vaultnuban/internal/service"
 	"github.com/systynlabs/vaultnuban/internal/store"
 )
 
 // Dependencies groups every external dependency the API needs.
 type Dependencies struct {
-	TenantStore store.TenantStore
-	Redis       *redis.Client
+	TenantStore  store.TenantStore
+	Redis        *redis.Client
+	CustomerSvc  *service.CustomerService
+	Provisioning *service.ProvisioningService
 }
 
 // NewRouter builds and returns the fully configured chi router.
@@ -30,34 +34,47 @@ func NewRouter(deps Dependencies) http.Handler {
 	// Infra endpoints — no auth
 	r.Get("/healthz", handleHealthz)
 
+	// Initialise handlers
+	customerH := handlers.NewCustomerHandler(deps.CustomerSvc)
+	vaH := handlers.NewVAHandler(deps.Provisioning)
+
 	// Authenticated tenant API
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.Auth(deps.TenantStore))
 		r.Use(middleware.Idempotency(deps.Redis))
 
-		// Placeholder routes — handlers are added in Phase 3+
 		r.Route("/v1", func(r chi.Router) {
-			r.Post("/customers", notImplemented)
-			r.Get("/customers/{customerID}", notImplemented)
+			// Customer management
+			r.Post("/customers", customerH.CreateCustomer)
+
 			r.Route("/customers/{customerID}", func(r chi.Router) {
-				r.Post("/virtual-account", notImplemented)
-				r.Get("/virtual-account", notImplemented)
-				r.Patch("/virtual-account", notImplemented)
-				r.Delete("/virtual-account", notImplemented)
-				r.Patch("/identity", notImplemented)
+				// Identity / KYC
+				r.Patch("/identity", customerH.UpdateKYCTier)
+
+				// Virtual account lifecycle
+				r.Post("/virtual-account", vaH.ProvisionVA)
+				r.Get("/virtual-account", vaH.GetVA)
+				r.Patch("/virtual-account", vaH.PatchVA)
+				r.Delete("/virtual-account", vaH.DeleteVA)
+
+				// Transactions (Phase 6)
 				r.Get("/transactions", notImplemented)
 				r.Get("/statement", notImplemented)
 			})
+
+			// Suspense (Phase 6)
 			r.Get("/suspense", notImplemented)
 			r.Post("/suspense/{itemID}/resolve", notImplemented)
-			r.Post("/webhook-endpoints", notImplemented) // P1
+
+			// Webhook relay registration (P1 / Phase 10)
+			r.Post("/webhook-endpoints", notImplemented)
 		})
 	})
 
-	// Nomba webhook — no tenant auth, HMAC-verified inside the handler
+	// Nomba webhook — no tenant auth, HMAC-verified inside the handler (Phase 4)
 	r.Post("/webhooks/nomba", notImplemented)
 
-	// Internal cron endpoint — authenticated via INTERNAL_SWEEP_TOKEN
+	// Internal cron endpoint — authenticated via INTERNAL_SWEEP_TOKEN (Phase 5)
 	r.Get("/internal/sweep", notImplemented)
 
 	return r

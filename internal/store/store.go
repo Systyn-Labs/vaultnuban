@@ -29,6 +29,7 @@ type VirtualAccountStore interface {
 	GetActiveVA(ctx context.Context, customerID string) (*domain.VirtualAccount, error)
 	GetVAByNUBAN(ctx context.Context, nuban string) (*domain.VirtualAccount, error)
 	GetVAByAccountRef(ctx context.Context, accountRef string) (*domain.VirtualAccount, error)
+	GetVAByCustomerAndStatus(ctx context.Context, customerID, status string) (*domain.VirtualAccount, error)
 	UpdateVAStatus(ctx context.Context, vaID, status, actor string) error
 	RenameVA(ctx context.Context, vaID, newName, actor string) error
 }

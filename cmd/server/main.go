@@ -12,7 +12,10 @@ import (
 
 	"github.com/systynlabs/vaultnuban/internal/api"
 	"github.com/systynlabs/vaultnuban/internal/config"
+	"github.com/systynlabs/vaultnuban/internal/provider/nomba"
+	"github.com/systynlabs/vaultnuban/internal/service"
 	"github.com/systynlabs/vaultnuban/internal/store"
+	"github.com/systynlabs/vaultnuban/internal/store/postgres"
 )
 
 func main() {
@@ -50,10 +53,31 @@ func main() {
 	defer rdb.Close()
 	log.Println("redis connected")
 
+	// ── Repos ─────────────────────────────────────────────────────────────────
+	tenantRepo := postgres.NewTenantRepo(pool)
+	customerRepo := postgres.NewCustomerRepo(pool)
+	vaRepo := postgres.NewVARepo(pool)
+	auditRepo := postgres.NewAuditRepo(pool)
+
+	// ── Provider ──────────────────────────────────────────────────────────────
+	prov := nomba.New(
+		cfg.NombaBaseURL,
+		cfg.NombaClientID,
+		cfg.NombaClientSecret,
+		cfg.NombaAccountID,
+		cfg.NombaWebhookSecret,
+	)
+
+	// ── Services ──────────────────────────────────────────────────────────────
+	customerSvc := service.NewCustomerService(customerRepo, auditRepo)
+	provisioningSvc := service.NewProvisioningService(customerRepo, vaRepo, auditRepo, prov)
+
 	// ── HTTP server ───────────────────────────────────────────────────────────
 	deps := api.Dependencies{
-		Redis: rdb,
-		// TenantStore will be wired in Phase 3 when the postgres repo is built.
+		TenantStore:  tenantRepo,
+		Redis:        rdb,
+		CustomerSvc:  customerSvc,
+		Provisioning: provisioningSvc,
 	}
 
 	router := api.NewRouter(deps)
@@ -65,7 +89,6 @@ func main() {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
