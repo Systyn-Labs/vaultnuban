@@ -9,6 +9,7 @@ import (
 	"github.com/systynlabs/vaultnuban/internal/ledger"
 	"github.com/systynlabs/vaultnuban/internal/logger"
 	"github.com/systynlabs/vaultnuban/internal/provider"
+	"github.com/systynlabs/vaultnuban/internal/relay"
 	"github.com/systynlabs/vaultnuban/internal/store"
 )
 
@@ -23,12 +24,13 @@ type WorkItem struct {
 
 // Worker reads WorkItems from a buffered channel and processes them.
 type Worker struct {
-	queue     chan WorkItem
-	matcher   *Matcher
-	txns      store.TransactionStore
-	webhooks  store.WebhookEventStore
-	suspense  store.SuspenseStore
-	customers store.CustomerStore
+	queue      chan WorkItem
+	matcher    *Matcher
+	txns       store.TransactionStore
+	webhooks   store.WebhookEventStore
+	suspense   store.SuspenseStore
+	customers  store.CustomerStore
+	dispatcher *relay.Dispatcher // nil when relay is not configured
 }
 
 func NewWorker(
@@ -48,6 +50,10 @@ func NewWorker(
 		customers: customers,
 	}
 }
+
+// SetDispatcher wires in the relay dispatcher after construction.
+// Call this in main.go once all dependencies are available.
+func (w *Worker) SetDispatcher(d *relay.Dispatcher) { w.dispatcher = d }
 
 // Enqueue adds a work item to the in-process queue.
 // Returns false if the queue is full — the webhook handler still acks;
@@ -181,7 +187,34 @@ func (w *Worker) processCredit(ctx context.Context, item WorkItem, pt provider.P
 	if item.WebhookEventID != "" {
 		_ = w.webhooks.MarkWebhookProcessed(ctx, item.WebhookEventID, "processed")
 	}
+
+	// FR-11: fan-out to tenant relay endpoints (fire-and-forget).
+	if w.dispatcher != nil && result.VA != nil {
+		w.dispatchRelay(ctx, result, pt, item.Payload.EventType)
+	}
 	return nil
+}
+
+// dispatchRelay resolves the tenant ID via the customer and fans out the event.
+func (w *Worker) dispatchRelay(ctx context.Context, result *MatchResult, pt provider.ProviderTransaction, eventType string) {
+	customer, err := w.customers.GetCustomer(ctx, "", result.CustomerID)
+	if err != nil || customer == nil {
+		return
+	}
+	txJSON, _ := json.Marshal(map[string]any{
+		"id":          pt.TransactionID,
+		"amount_kobo": pt.AmountKobo,
+		"nuban":       pt.AccountNumber,
+		"occurred_at": pt.OccurredAt,
+		"sender_name": pt.SenderName,
+		"sender_bank": pt.SenderBank,
+		"narration":   pt.Narration,
+	})
+	w.dispatcher.Dispatch(ctx, customer.TenantID, relay.EventPayload{
+		EventType:   eventType,
+		OccurredAt:  pt.OccurredAt.Format("2006-01-02T15:04:05Z07:00"),
+		Transaction: txJSON,
+	})
 }
 
 func (w *Worker) processReversal(ctx context.Context, item WorkItem, pt provider.ProviderTransaction) error {

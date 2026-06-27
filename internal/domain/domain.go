@@ -208,6 +208,33 @@ type SweepRun struct {
 	RanAt        time.Time
 }
 
+// ── Relay (FR-11) ─────────────────────────────────────────────────────────────
+
+// RelayEndpoint is a tenant-registered URL that receives payment event webhooks.
+type RelayEndpoint struct {
+	ID         string
+	TenantID   string
+	URL        string
+	SecretHash string // SHA-256 hex of the signing secret (not stored in plaintext)
+	Active     bool
+	CreatedAt  time.Time
+}
+
+// RelayDelivery is one fan-out attempt to a RelayEndpoint.
+type RelayDelivery struct {
+	ID          string
+	EndpointID  string
+	EventType   string
+	Payload     []byte // JSON
+	Attempt     int
+	Status      string // pending | delivered | failed | dead_letter
+	StatusCode  *int
+	Error       *string
+	NextRetryAt *time.Time
+	DeliveredAt *time.Time
+	CreatedAt   time.Time
+}
+
 // ── Audit ─────────────────────────────────────────────────────────────────────
 
 type AuditEntry struct {

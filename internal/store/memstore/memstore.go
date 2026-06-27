@@ -619,3 +619,98 @@ func (s *AuditStore) Append(_ context.Context, entry *domain.AuditEntry) error {
 	s.entries = append(s.entries, entry)
 	return nil
 }
+
+// ── RelayStore ────────────────────────────────────────────────────────────────
+
+type RelayStore struct {
+	mu        sync.Mutex
+	endpoints map[string]*domain.RelayEndpoint
+	deliveries []*domain.RelayDelivery
+}
+
+func NewRelayStore() *RelayStore {
+	return &RelayStore{endpoints: make(map[string]*domain.RelayEndpoint)}
+}
+
+func (s *RelayStore) CreateEndpoint(_ context.Context, ep *domain.RelayEndpoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ep.ID == "" {
+		ep.ID = nextID("ep")
+	}
+	ep.CreatedAt = time.Now()
+	s.endpoints[ep.ID] = ep
+	return nil
+}
+
+func (s *RelayStore) ListEndpoints(_ context.Context, tenantID string) ([]*domain.RelayEndpoint, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*domain.RelayEndpoint
+	for _, ep := range s.endpoints {
+		if ep.TenantID == tenantID {
+			out = append(out, ep)
+		}
+	}
+	return out, nil
+}
+
+func (s *RelayStore) GetEndpoint(_ context.Context, id string) (*domain.RelayEndpoint, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ep, ok := s.endpoints[id]
+	if !ok {
+		return nil, nil
+	}
+	return ep, nil
+}
+
+func (s *RelayStore) DeactivateEndpoint(_ context.Context, id, tenantID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ep, ok := s.endpoints[id]
+	if !ok || ep.TenantID != tenantID {
+		return fmt.Errorf("memstore: relay endpoint not found")
+	}
+	ep.Active = false
+	return nil
+}
+
+func (s *RelayStore) CreateDelivery(_ context.Context, d *domain.RelayDelivery) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if d.ID == "" {
+		d.ID = nextID("del")
+	}
+	d.CreatedAt = time.Now()
+	s.deliveries = append(s.deliveries, d)
+	return nil
+}
+
+func (s *RelayStore) UpdateDelivery(_ context.Context, d *domain.RelayDelivery) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, existing := range s.deliveries {
+		if existing.ID == d.ID {
+			s.deliveries[i] = d
+			return nil
+		}
+	}
+	return fmt.Errorf("memstore: delivery not found: %s", d.ID)
+}
+
+func (s *RelayStore) ListPendingRetries(_ context.Context, limit int) ([]*domain.RelayDelivery, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	var out []*domain.RelayDelivery
+	for _, d := range s.deliveries {
+		if d.Status == "failed" && d.NextRetryAt != nil && !d.NextRetryAt.After(now) {
+			out = append(out, d)
+			if limit > 0 && len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}

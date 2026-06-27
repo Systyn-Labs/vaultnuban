@@ -70,3 +70,16 @@ type SweepStore interface {
 type AuditStore interface {
 	Append(ctx context.Context, entry *domain.AuditEntry) error
 }
+
+// RelayStore manages tenant webhook relay endpoints and delivery records (FR-11).
+type RelayStore interface {
+	CreateEndpoint(ctx context.Context, ep *domain.RelayEndpoint) error
+	ListEndpoints(ctx context.Context, tenantID string) ([]*domain.RelayEndpoint, error)
+	GetEndpoint(ctx context.Context, id string) (*domain.RelayEndpoint, error)
+	DeactivateEndpoint(ctx context.Context, id, tenantID string) error
+
+	CreateDelivery(ctx context.Context, d *domain.RelayDelivery) error
+	UpdateDelivery(ctx context.Context, d *domain.RelayDelivery) error
+	// ListPendingRetries returns failed deliveries whose next_retry_at is in the past.
+	ListPendingRetries(ctx context.Context, limit int) ([]*domain.RelayDelivery, error)
+}

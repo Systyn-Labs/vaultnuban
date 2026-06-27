@@ -23,6 +23,7 @@ type Dependencies struct {
 	CustomerStore store.CustomerStore
 	TxnStore      store.TransactionStore
 	VAStore       store.VirtualAccountStore
+	RelayStore    store.RelayStore
 	Redis         *redis.Client
 	CustomerSvc   *service.CustomerService
 	Provisioning  *service.ProvisioningService
@@ -53,6 +54,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	sweepH := handlers.NewSweepHandler(deps.Sweep, deps.SweepToken)
 	txnH := handlers.NewTransactionHandler(deps.TxnStore, deps.VAStore, deps.CustomerStore)
 	suspenseH := handlers.NewSuspenseHandler(deps.SuspenseSvc)
+	relayH := handlers.NewRelayHandler(deps.RelayStore)
 
 	// Authenticated tenant API
 	r.Group(func(r chi.Router) {
@@ -82,8 +84,8 @@ func NewRouter(deps Dependencies) http.Handler {
 			r.Get("/suspense", suspenseH.ListSuspense)
 			r.Post("/suspense/{itemID}/resolve", suspenseH.ResolveSuspense)
 
-			// Webhook relay registration (P1 / Phase 10)
-			r.Post("/webhook-endpoints", notImplemented)
+			// Webhook relay registration (FR-11)
+			r.Post("/webhook-endpoints", relayH.CreateEndpoint)
 		})
 	})
 

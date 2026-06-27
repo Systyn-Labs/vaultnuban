@@ -14,6 +14,7 @@ import (
 	"github.com/systynlabs/vaultnuban/internal/logger"
 	"github.com/systynlabs/vaultnuban/internal/provider/nomba"
 	"github.com/systynlabs/vaultnuban/internal/recon"
+	"github.com/systynlabs/vaultnuban/internal/relay"
 	"github.com/systynlabs/vaultnuban/internal/service"
 	"github.com/systynlabs/vaultnuban/internal/store"
 	"github.com/systynlabs/vaultnuban/internal/store/postgres"
@@ -64,6 +65,7 @@ func main() {
 	webhookRepo := postgres.NewWebhookRepo(pool)
 	suspenseRepo := postgres.NewSuspenseRepo(pool)
 	sweepRepo := postgres.NewSweepRepo(pool)
+	relayRepo := postgres.NewRelayRepo(pool)
 
 	// ── Provider ──────────────────────────────────────────────────────────────
 	prov := nomba.New(
@@ -83,6 +85,11 @@ func main() {
 	// ── Reconciliation worker + sweep ─────────────────────────────────────────
 	matcher := recon.NewMatcher(vaRepo, txnRepo, cfg.TierLimits)
 	worker := recon.NewWorker(512, matcher, txnRepo, webhookRepo, suspenseRepo, customerRepo)
+
+	// ── Relay dispatcher (FR-11) ───────────────────────────────────────────────
+	dispatcher := relay.NewDispatcher(relayRepo)
+	worker.SetDispatcher(dispatcher)
+
 	sweepRunner := recon.NewSweepRunner(prov, txnRepo, sweepRepo, worker, cfg.SweepInterval, cfg.SweepOverlap)
 
 	go worker.Run(ctx)
@@ -97,6 +104,7 @@ func main() {
 		CustomerStore: customerRepo,
 		TxnStore:      txnRepo,
 		VAStore:       vaRepo,
+		RelayStore:    relayRepo,
 		Redis:         rdb,
 		CustomerSvc:   customerSvc,
 		Provisioning:  provisioningSvc,
