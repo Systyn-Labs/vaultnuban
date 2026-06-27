@@ -1,0 +1,36 @@
+# Binaries
+vaultnuban
+vaultnuban.exe
+*.exe
+*.out
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+.env.demo
+.env.production
+
+# Go build cache
+/vendor/
+
+# Test output
+*.test
+coverage.out
+coverage.html
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Neon / local DB
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
