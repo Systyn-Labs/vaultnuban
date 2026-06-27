@@ -1,0 +1,26 @@
+meta {
+  name: Rename Virtual Account
+  type: http
+  seq: 3
+}
+
+patch {
+  url: {{base_url}}/v1/customers/{{customer_id}}/virtual-account
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{api_key}}
+}
+
+headers {
+  Idempotency-Key: rename-va-{{customer_id}}-v2
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "account_name": "Amaka Chukwuemeka"
+  }
+}

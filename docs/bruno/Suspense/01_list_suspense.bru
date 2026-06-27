@@ -1,0 +1,21 @@
+meta {
+  name: List Suspense Items
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{base_url}}/v1/suspense?limit=20
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{api_key}}
+}
+
+script:post-response {
+  if (res.status === 200 && res.body.data && res.body.data.length > 0) {
+    bru.setVar("suspense_item_id", res.body.data[0].id);
+  }
+}

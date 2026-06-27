@@ -1,0 +1,928 @@
+openapi: 3.1.0
+info:
+  title: VaultNUBAN API
+  version: "1.0.0"
+  description: |
+    Multi-tenant dedicated virtual account (DVA) infrastructure built on the Nomba Virtual Accounts API.
+
+    ## Authentication
+    All `/v1/*` endpoints require a Bearer API key:
+    ```
+    Authorization: Bearer <api_key>
+    ```
+
+    ## Idempotency
+    Mutating endpoints (`POST`, `PATCH`, `DELETE`) accept an optional
+    `Idempotency-Key` header. Replaying the same key within 24 hours returns
+    the cached response without re-executing the operation.
+
+    ## Error format
+    All errors follow [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)
+    `application/problem+json`:
+    ```json
+    {
+      "type": "https://vaultnuban.systynlabs.com/problems/not-found",
+      "title": "Not Found",
+      "status": 404,
+      "detail": "customer not found"
+    }
+    ```
+
+servers:
+  - url: https://vaultnuban.onrender.com
+    description: Production (Render free tier)
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: Health
+    description: Infrastructure health check
+  - name: Customers
+    description: Customer onboarding and KYC tier management
+  - name: Virtual Accounts
+    description: NUBAN provisioning and lifecycle
+  - name: Transactions
+    description: Transaction history and account statements
+  - name: Suspense
+    description: Unmatched or limit-breached payments pending manual resolution
+  - name: Webhooks
+    description: Nomba payment event ingestor
+  - name: Internal
+    description: Cron-triggered reconciliation sweep (internal use)
+
+# ── Security ──────────────────────────────────────────────────────────────────
+
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Tenant API key issued during onboarding
+
+  # ── Reusable schemas ─────────────────────────────────────────────────────────
+
+  schemas:
+
+    # ── Problem Details (RFC 9457) ────────────────────────────────────────────
+
+    Problem:
+      type: object
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+          example: "https://vaultnuban.systynlabs.com/problems/not-found"
+        title:
+          type: string
+          example: "Not Found"
+        status:
+          type: integer
+          example: 404
+        detail:
+          type: string
+          example: "customer not found"
+        instance:
+          type: string
+          format: uri
+
+    # ── Identity ──────────────────────────────────────────────────────────────
+
+    Identity:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        bvn_masked:
+          type: string
+          nullable: true
+          example: "2234****890"
+        nin_masked:
+          type: string
+          nullable: true
+          example: "1122****345"
+        kyc_tier:
+          type: integer
+          enum: [1, 2, 3]
+          example: 2
+        verification_status:
+          type: string
+          example: "pending"
+
+    # ── Customer ──────────────────────────────────────────────────────────────
+
+    Customer:
+      type: object
+      required: [id, tenant_id, external_ref, display_name, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        tenant_id:
+          type: string
+          format: uuid
+        external_ref:
+          type: string
+          description: Caller-supplied unique identifier for this customer within the tenant
+          example: "user_12345"
+        display_name:
+          type: string
+          example: "Amaka Obi"
+        status:
+          type: string
+          enum: [active, inactive]
+        identity:
+          $ref: '#/components/schemas/Identity'
+        created_at:
+          type: string
+          format: date-time
+
+    # ── Virtual Account ───────────────────────────────────────────────────────
+
+    VirtualAccount:
+      type: object
+      required: [id, customer_id, nuban, bank_name, account_name, account_ref, status, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+          format: uuid
+        nuban:
+          type: string
+          description: 10-digit Nigerian bank account number assigned by Nomba
+          example: "2038571294"
+        bank_name:
+          type: string
+          example: "Nomba Microfinance Bank"
+        account_name:
+          type: string
+          example: "Amaka Obi"
+        account_ref:
+          type: string
+          description: Internal Nomba accountRef used for routing
+          example: "t1a2b3c4dc00000001abc123456"
+        status:
+          type: string
+          enum: [PENDING, ACTIVE, SUSPENDED, CLOSED]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    # ── Transaction ───────────────────────────────────────────────────────────
+
+    Transaction:
+      type: object
+      required: [id, amount_kobo, amount_ngn, direction, source, status, occurred_at]
+      properties:
+        id:
+          type: string
+          description: Nomba transactionId (primary key)
+          example: "NMB20240610001"
+        amount_kobo:
+          type: integer
+          format: int64
+          example: 500000
+        amount_ngn:
+          type: string
+          description: Human-readable amount in naira
+          example: "5000.00"
+        direction:
+          type: string
+          enum: [credit, debit]
+        source:
+          type: string
+          enum: [webhook, sweep, internal]
+        status:
+          type: string
+          enum: [posted, reversed, pending]
+        sender_name:
+          type: string
+          nullable: true
+          example: "John Doe"
+        sender_bank:
+          type: string
+          nullable: true
+          example: "GTBank"
+        narration:
+          type: string
+          nullable: true
+          example: "Transfer from John"
+        occurred_at:
+          type: string
+          format: date-time
+
+    # ── Statement entry ───────────────────────────────────────────────────────
+
+    StatementEntry:
+      type: object
+      properties:
+        occurred_at:
+          type: string
+          format: date-time
+        description:
+          type: string
+        debit_kobo:
+          type: integer
+          format: int64
+        credit_kobo:
+          type: integer
+          format: int64
+        debit_ngn:
+          type: string
+          example: "0.00"
+        credit_ngn:
+          type: string
+          example: "5000.00"
+        running_balance_kobo:
+          type: integer
+          format: int64
+        running_balance_ngn:
+          type: string
+          example: "5000.00"
+
+    # ── Suspense item ─────────────────────────────────────────────────────────
+
+    SuspenseItem:
+      type: object
+      required: [id, transaction_id, reason, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        transaction_id:
+          type: string
+          example: "NMB20240610001"
+        reason:
+          type: string
+          enum: [unmatched, closed_account, suspended_account, amount_mismatch, tier_limit]
+        status:
+          type: string
+          enum: [open, reassigned, refund_flagged]
+        notes:
+          type: string
+          nullable: true
+        resolved_by:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    # ── Sweep result ──────────────────────────────────────────────────────────
+
+    SweepResult:
+      type: object
+      properties:
+        window_from:
+          type: string
+          format: date-time
+        window_to:
+          type: string
+          format: date-time
+        pages_fetched:
+          type: integer
+        found:
+          type: integer
+        posted:
+          type: integer
+        suspensed:
+          type: integer
+        skipped:
+          type: integer
+        duration_ms:
+          type: integer
+          format: int64
+
+    # ── Cursor pagination wrapper ─────────────────────────────────────────────
+
+    PaginatedTransactions:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaction'
+        next_cursor:
+          type: string
+          nullable: true
+
+    PaginatedSuspenseItems:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SuspenseItem'
+        next_cursor:
+          type: string
+          nullable: true
+
+  # ── Common parameters ─────────────────────────────────────────────────────────
+
+  parameters:
+
+    CustomerID:
+      name: customerID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Customer UUID
+
+    ItemID:
+      name: itemID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Suspense item UUID
+
+    LimitParam:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+      description: Maximum number of results per page
+
+    CursorParam:
+      name: cursor
+      in: query
+      schema:
+        type: string
+      description: Opaque pagination cursor from a previous response's `next_cursor`
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      schema:
+        type: string
+        maxLength: 255
+      description: Client-generated key for idempotent request deduplication (24 h TTL)
+
+  # ── Common responses ──────────────────────────────────────────────────────────
+
+  responses:
+
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    NotFound:
+      description: Resource does not exist within the tenant
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    Conflict:
+      description: State transition conflict or idempotency collision
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    UnprocessableEntity:
+      description: Validation failure
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+    InternalServerError:
+      description: Unexpected server error
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+
+paths:
+
+  # ── Health ──────────────────────────────────────────────────────────────────
+
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Liveness check
+      security: []
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "ok"
+
+  # ── Customers ───────────────────────────────────────────────────────────────
+
+  /v1/customers:
+    post:
+      tags: [Customers]
+      summary: Create or retrieve a customer
+      description: |
+        Idempotent by `external_ref` within the tenant. Returns `201` on first
+        creation and `200` if the customer already exists.
+      operationId: createCustomer
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [external_ref, display_name, identity]
+              properties:
+                external_ref:
+                  type: string
+                  description: Caller's own stable identifier for this customer
+                  example: "user_12345"
+                display_name:
+                  type: string
+                  example: "Amaka Obi"
+                identity:
+                  type: object
+                  required: [kyc_tier]
+                  properties:
+                    bvn_masked:
+                      type: string
+                      nullable: true
+                      description: Last 4+ digits masked — at least one of bvn_masked or nin_masked required
+                      example: "****78901"
+                    nin_masked:
+                      type: string
+                      nullable: true
+                      example: "****45678"
+                    kyc_tier:
+                      type: integer
+                      enum: [1, 2, 3]
+                      example: 2
+      responses:
+        "201":
+          description: Customer created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+        "200":
+          description: Customer already exists (idempotent)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+        "400":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/customers/{customerID}/identity:
+    patch:
+      tags: [Customers]
+      summary: Upgrade KYC tier
+      description: |
+        Updates the customer's KYC tier. Tier must be 1, 2, or 3.
+        Tier changes are audit-logged.
+      operationId: updateKYCTier
+      parameters:
+        - $ref: '#/components/parameters/CustomerID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kyc_tier]
+              properties:
+                kyc_tier:
+                  type: integer
+                  enum: [1, 2, 3]
+                  example: 3
+      responses:
+        "200":
+          description: Updated customer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Customer'
+        "400":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ── Virtual Accounts ─────────────────────────────────────────────────────────
+
+  /v1/customers/{customerID}/virtual-account:
+    post:
+      tags: [Virtual Accounts]
+      summary: Provision a NUBAN virtual account
+      description: |
+        Creates a Nomba virtual account for the customer and returns the NUBAN.
+        Idempotent — returns the existing account if one is already ACTIVE.
+        Returns `201` on creation, `200` on idempotent re-provision.
+      operationId: provisionVirtualAccount
+      parameters:
+        - $ref: '#/components/parameters/CustomerID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        "201":
+          description: Virtual account provisioned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VirtualAccount'
+        "200":
+          description: Existing active account returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VirtualAccount'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    get:
+      tags: [Virtual Accounts]
+      summary: Get the customer's virtual account
+      operationId: getVirtualAccount
+      parameters:
+        - $ref: '#/components/parameters/CustomerID'
+      responses:
+        "200":
+          description: Virtual account details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VirtualAccount'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    patch:
+      tags: [Virtual Accounts]
+      summary: Rename, suspend, or unsuspend a virtual account
+      description: |
+        Send **one** of:
+        - `{ "account_name": "New Name" }` — renames the account
+        - `{ "action": "suspend" }` — suspends the account (new credits go to suspense)
+        - `{ "action": "unsuspend" }` — restores an active state
+      operationId: patchVirtualAccount
+      parameters:
+        - $ref: '#/components/parameters/CustomerID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                account_name:
+                  type: string
+                  example: "Chidi Okeke"
+                action:
+                  type: string
+                  enum: [suspend, unsuspend]
+      responses:
+        "200":
+          description: Account renamed (only returned for rename operations)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VirtualAccount'
+        "204":
+          description: Suspend / unsuspend applied
+        "400":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          $ref: '#/components/responses/Conflict'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags: [Virtual Accounts]
+      summary: Close a virtual account permanently
+      description: |
+        Closes the virtual account. This transition is **irreversible**.
+        Subsequent inbound credits to the NUBAN will be routed to the suspense
+        ledger with reason `closed_account`.
+      operationId: closeVirtualAccount
+      parameters:
+        - $ref: '#/components/parameters/CustomerID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        "204":
+          description: Account closed
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "409":
+          $ref: '#/components/responses/Conflict'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ── Transactions ─────────────────────────────────────────────────────────────
+
+  /v1/customers/{customerID}/transactions:
+    get:
+      tags: [Transactions]
+      summary: List transactions for a customer
+      description: |
+        Returns the customer's inbound and outbound transactions in reverse
+        chronological order. Paginated via opaque cursor.
+      operationId: listTransactions
+      parameters:
+        - $ref: '#/components/parameters/CustomerID'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        "200":
+          description: Paginated list of transactions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedTransactions'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/customers/{customerID}/statement:
+    get:
+      tags: [Transactions]
+      summary: Generate an account statement
+      description: |
+        Returns opening balance, closing balance, and a running-balance ledger for
+        the specified date window. Both `from` and `to` are required RFC3339
+        timestamps.
+      operationId: getStatement
+      parameters:
+        - $ref: '#/components/parameters/CustomerID'
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+          example: "2026-06-01T00:00:00Z"
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date-time
+          example: "2026-06-30T23:59:59Z"
+      responses:
+        "200":
+          description: Account statement
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  customer_id:
+                    type: string
+                    format: uuid
+                  from:
+                    type: string
+                    format: date-time
+                  to:
+                    type: string
+                    format: date-time
+                  opening_balance_kobo:
+                    type: integer
+                    format: int64
+                    example: 0
+                  opening_balance_ngn:
+                    type: string
+                    example: "0.00"
+                  closing_balance_kobo:
+                    type: integer
+                    format: int64
+                    example: 500000
+                  closing_balance_ngn:
+                    type: string
+                    example: "5000.00"
+                  entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StatementEntry'
+        "400":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ── Suspense ─────────────────────────────────────────────────────────────────
+
+  /v1/suspense:
+    get:
+      tags: [Suspense]
+      summary: List open suspense items
+      description: |
+        Returns all unresolved suspense items for the tenant, newest first.
+        Only items with `status = open` are returned.
+      operationId: listSuspenseItems
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        "200":
+          description: Paginated suspense items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedSuspenseItems'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/suspense/{itemID}/resolve:
+    post:
+      tags: [Suspense]
+      summary: Resolve a suspense item
+      description: |
+        Two resolution strategies:
+
+        - **`reassign`** — transfers the funds from the suspense ledger account
+          to a specified customer's wallet. Posts compensating ledger entries.
+          Requires `target_customer_id`.
+
+        - **`refund_flagged`** — marks the item as flagged for manual refund.
+          Funds remain in the suspense ledger account. No ledger entries posted.
+      operationId: resolveSuspenseItem
+      parameters:
+        - $ref: '#/components/parameters/ItemID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resolution]
+              properties:
+                resolution:
+                  type: string
+                  enum: [reassign, refund_flagged]
+                target_customer_id:
+                  type: string
+                  format: uuid
+                  description: Required when resolution is `reassign`
+                notes:
+                  type: string
+                  example: "Customer confirmed payment belongs to them"
+      responses:
+        "200":
+          description: Suspense item resolved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "resolved"
+        "400":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ── Webhooks ─────────────────────────────────────────────────────────────────
+
+  /webhooks/nomba:
+    post:
+      tags: [Webhooks]
+      summary: Nomba payment event ingestor
+      description: |
+        Receives payment events from Nomba. Signature is verified via HMAC-SHA256
+        (`nomba-signature` header). Events older than 5 minutes are rejected.
+
+        Must respond `200` within 5 seconds; all processing is asynchronous.
+        Duplicate deliveries (same transactionId + event type) are silently
+        de-duplicated.
+      operationId: handleNombaWebhook
+      security: []
+      parameters:
+        - name: nomba-signature
+          in: header
+          required: true
+          schema:
+            type: string
+          description: HMAC-SHA256 hex signature
+        - name: nomba-signature-algorithm
+          in: header
+          schema:
+            type: string
+            example: "HmacSHA256"
+        - name: nomba-signature-version
+          in: header
+          schema:
+            type: string
+            example: "v1"
+        - name: nomba-timestamp
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Unix timestamp (seconds) of the event
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Nomba webhook payload (structure defined by Nomba)
+      responses:
+        "200":
+          description: Event acknowledged (processing is async)
+        "401":
+          description: Invalid or stale signature
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  # ── Internal ──────────────────────────────────────────────────────────────────
+
+  /internal/sweep:
+    get:
+      tags: [Internal]
+      summary: Trigger reconciliation sweep
+      description: |
+        Pages the Nomba Transactions API and posts any credits missed by the
+        webhook ingestor. Authenticated via the `Authorization: Bearer <INTERNAL_SWEEP_TOKEN>`
+        header (distinct from tenant API keys).
+
+        Safe to call multiple times — duplicate transactionIds are skipped.
+        Intended to be called by a cron job (e.g. UptimeRobot HTTP monitor).
+      operationId: triggerSweep
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Sweep complete — summary returned even on partial error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SweepResult'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'

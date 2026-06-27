@@ -1,0 +1,27 @@
+meta {
+  name: Resolve Suspense (Refund Flagged)
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{base_url}}/v1/suspense/{{suspense_item_id}}/resolve
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{api_key}}
+}
+
+headers {
+  Idempotency-Key: resolve-susp-refund-{{suspense_item_id}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "resolution": "refund_flagged",
+    "notes": "Sender cannot be identified; flagged for manual bank reversal"
+  }
+}

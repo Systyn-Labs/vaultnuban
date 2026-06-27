@@ -1,0 +1,26 @@
+meta {
+  name: Upgrade KYC Tier
+  type: http
+  seq: 2
+}
+
+patch {
+  url: {{base_url}}/v1/customers/{{customer_id}}/identity
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{api_key}}
+}
+
+headers {
+  Idempotency-Key: kyc-upgrade-{{customer_id}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "kyc_tier": 3
+  }
+}

@@ -1,0 +1,26 @@
+meta {
+  name: Unsuspend Virtual Account
+  type: http
+  seq: 5
+}
+
+patch {
+  url: {{base_url}}/v1/customers/{{customer_id}}/virtual-account
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{api_key}}
+}
+
+headers {
+  Idempotency-Key: unsuspend-va-{{customer_id}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "action": "unsuspend"
+  }
+}

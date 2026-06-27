@@ -1,0 +1,25 @@
+meta {
+  name: Provision Virtual Account
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{base_url}}/v1/customers/{{customer_id}}/virtual-account
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{api_key}}
+}
+
+headers {
+  Idempotency-Key: provision-va-{{customer_id}}
+}
+
+script:post-response {
+  if (res.status === 201 || res.status === 200) {
+    bru.setVar("va_id", res.body.id);
+  }
+}

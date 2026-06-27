@@ -1,0 +1,28 @@
+meta {
+  name: Resolve Suspense (Reassign)
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{base_url}}/v1/suspense/{{suspense_item_id}}/resolve
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{api_key}}
+}
+
+headers {
+  Idempotency-Key: resolve-susp-{{suspense_item_id}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "resolution": "reassign",
+    "target_customer_id": "{{customer_id}}",
+    "notes": "Customer confirmed this transfer belongs to their account"
+  }
+}
