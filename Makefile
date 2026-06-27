@@ -10,7 +10,7 @@ build:
 
 ## run: build and start the server (reads .env if present)
 run: build
-	@if [ -f .env ]; then export $$(grep -v '^#' .env | xargs); fi && ./$(BINARY)
+	@if [ -f .env ]; then set -a && . ./.env && set +a; fi && ./$(BINARY)
 
 ## test: run all tests including the harness scenarios
 test:

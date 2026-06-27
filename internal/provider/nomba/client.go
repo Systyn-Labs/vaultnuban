@@ -30,7 +30,7 @@ type Client struct {
 	baseURL    string
 	clientID   string
 	clientSecret string
-	accountID  string // X-Account-Id header required by Nomba
+	accountID  string // accountId header required by Nomba
 	httpClient *http.Client
 	token      tokenCache
 }
@@ -137,7 +137,7 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, auth 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	if c.accountID != "" {
-		req.Header.Set("X-Account-Id", c.accountID)
+		req.Header.Set("accountId", c.accountID)
 	}
 
 	if auth {
