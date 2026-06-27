@@ -1,0 +1,65 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Deploy: connect this repo in the Render dashboard and it will auto-detect this file.
+#
+# External services wired before deploying:
+#   DATABASE_URL  → Neon (postgres://... connection string, "pooled" endpoint)
+#   REDIS_URL     → Upstash (rediss://... TLS endpoint)
+#   All Nomba creds → obtained from the Nomba developer portal
+
+services:
+  - type: web
+    name: vaultnuban
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: oregon           # Render free tier regions: oregon | frankfurt | singapore
+    healthCheckPath: /healthz
+
+    # Render sets PORT automatically; we read it via envOr("PORT", "8080").
+    # Do not add PORT here — Render injects it.
+
+    envVars:
+      # ── Nomba credentials ────────────────────────────────────────────────────
+      - key: NOMBA_CLIENT_ID
+        sync: false          # set manually in the Render dashboard
+
+      - key: NOMBA_CLIENT_SECRET
+        sync: false
+
+      - key: NOMBA_ACCOUNT_ID
+        sync: false
+
+      - key: NOMBA_BASE_URL
+        value: https://api.nomba.com/v1
+
+      - key: NOMBA_WEBHOOK_SECRET
+        sync: false
+
+      # ── Storage ──────────────────────────────────────────────────────────────
+      - key: DATABASE_URL
+        sync: false          # paste Neon pooled connection string (sslmode=require)
+
+      - key: REDIS_URL
+        sync: false          # paste Upstash TLS URL (rediss://...)
+
+      # ── Internal auth ────────────────────────────────────────────────────────
+      - key: INTERNAL_SWEEP_TOKEN
+        generateValue: true  # Render auto-generates a secure random value
+
+      # ── Reconciliation schedule ───────────────────────────────────────────────
+      - key: SWEEP_INTERVAL
+        value: 10m
+
+      - key: SWEEP_OVERLAP
+        value: 15m
+
+      # ── KYC tier limits (CBN defaults in kobo) ────────────────────────────────
+      # Tier 1: ₦50k daily / ₦300k max balance
+      # Tier 2: ₦200k daily / ₦5M max balance
+      # Tier 3: uncapped (0 = no limit)
+      - key: TIER_LIMITS_JSON
+        value: '{"1":{"daily_credit_kobo":5000000,"max_balance_kobo":30000000},"2":{"daily_credit_kobo":20000000,"max_balance_kobo":500000000},"3":{"daily_credit_kobo":0,"max_balance_kobo":0}}'
+
+      # ── Runtime ──────────────────────────────────────────────────────────────
+      - key: ENV
+        value: production
