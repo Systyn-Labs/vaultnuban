@@ -10,6 +10,8 @@ import (
 
 	"github.com/systynlabs/vaultnuban/internal/api/handlers"
 	"github.com/systynlabs/vaultnuban/internal/api/middleware"
+	"github.com/systynlabs/vaultnuban/internal/provider"
+	"github.com/systynlabs/vaultnuban/internal/recon"
 	"github.com/systynlabs/vaultnuban/internal/service"
 	"github.com/systynlabs/vaultnuban/internal/store"
 )
@@ -17,9 +19,12 @@ import (
 // Dependencies groups every external dependency the API needs.
 type Dependencies struct {
 	TenantStore  store.TenantStore
+	WebhookStore store.WebhookEventStore
 	Redis        *redis.Client
 	CustomerSvc  *service.CustomerService
 	Provisioning *service.ProvisioningService
+	Provider     provider.Provider
+	Worker       *recon.Worker
 }
 
 // NewRouter builds and returns the fully configured chi router.
@@ -37,6 +42,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	// Initialise handlers
 	customerH := handlers.NewCustomerHandler(deps.CustomerSvc)
 	vaH := handlers.NewVAHandler(deps.Provisioning)
+	webhookH := handlers.NewWebhookHandler(deps.Provider, deps.WebhookStore, deps.Worker)
 
 	// Authenticated tenant API
 	r.Group(func(r chi.Router) {
@@ -71,8 +77,8 @@ func NewRouter(deps Dependencies) http.Handler {
 		})
 	})
 
-	// Nomba webhook — no tenant auth, HMAC-verified inside the handler (Phase 4)
-	r.Post("/webhooks/nomba", notImplemented)
+	// Nomba webhook — no tenant auth, HMAC-verified inside the handler (FR-4)
+	r.Post("/webhooks/nomba", webhookH.HandleNombaWebhook)
 
 	// Internal cron endpoint — authenticated via INTERNAL_SWEEP_TOKEN (Phase 5)
 	r.Get("/internal/sweep", notImplemented)

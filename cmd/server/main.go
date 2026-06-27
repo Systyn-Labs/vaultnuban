@@ -13,13 +13,15 @@ import (
 	"github.com/systynlabs/vaultnuban/internal/api"
 	"github.com/systynlabs/vaultnuban/internal/config"
 	"github.com/systynlabs/vaultnuban/internal/provider/nomba"
+	"github.com/systynlabs/vaultnuban/internal/recon"
 	"github.com/systynlabs/vaultnuban/internal/service"
 	"github.com/systynlabs/vaultnuban/internal/store"
 	"github.com/systynlabs/vaultnuban/internal/store/postgres"
 )
 
 func main() {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -58,6 +60,9 @@ func main() {
 	customerRepo := postgres.NewCustomerRepo(pool)
 	vaRepo := postgres.NewVARepo(pool)
 	auditRepo := postgres.NewAuditRepo(pool)
+	txnRepo := postgres.NewTransactionRepo(pool)
+	webhookRepo := postgres.NewWebhookRepo(pool)
+	suspenseRepo := postgres.NewSuspenseRepo(pool)
 
 	// ── Provider ──────────────────────────────────────────────────────────────
 	prov := nomba.New(
@@ -72,12 +77,21 @@ func main() {
 	customerSvc := service.NewCustomerService(customerRepo, auditRepo)
 	provisioningSvc := service.NewProvisioningService(customerRepo, vaRepo, auditRepo, prov)
 
+	// ── Reconciliation worker ─────────────────────────────────────────────────
+	matcher := recon.NewMatcher(vaRepo, txnRepo, cfg.TierLimits)
+	worker := recon.NewWorker(512, matcher, txnRepo, webhookRepo, suspenseRepo, customerRepo)
+
+	go worker.Run(ctx)
+
 	// ── HTTP server ───────────────────────────────────────────────────────────
 	deps := api.Dependencies{
 		TenantStore:  tenantRepo,
+		WebhookStore: webhookRepo,
 		Redis:        rdb,
 		CustomerSvc:  customerSvc,
 		Provisioning: provisioningSvc,
+		Provider:     prov,
+		Worker:       worker,
 	}
 
 	router := api.NewRouter(deps)
@@ -101,9 +115,10 @@ func main() {
 
 	<-quit
 	log.Println("shutting down...")
+	cancel() // stop worker
 
-	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutCancel()
 	if err := srv.Shutdown(shutCtx); err != nil {
 		log.Printf("shutdown error: %v", err)
 	}

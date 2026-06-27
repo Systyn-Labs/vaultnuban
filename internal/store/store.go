@@ -36,11 +36,13 @@ type VirtualAccountStore interface {
 
 // TransactionStore manages inbound transaction records and ledger entries.
 type TransactionStore interface {
-	UpsertTransaction(ctx context.Context, tx *domain.Transaction) (created bool, err error)
+	// PostTransaction inserts the transaction and its balanced ledger entries atomically.
+	// Returns created=false (no error) if the transactionId already exists (idempotent).
+	PostTransaction(ctx context.Context, tx *domain.Transaction, entries []domain.LedgerEntry) (created bool, err error)
 	GetTransaction(ctx context.Context, txID string) (*domain.Transaction, error)
 	ListTransactions(ctx context.Context, vaID string, limit int, cursor string) ([]*domain.Transaction, string, error)
-	PostLedgerEntries(ctx context.Context, txID string, entries []domain.LedgerEntry) error
 	GetBalance(ctx context.Context, customerWalletAccount string) (int64, error)
+	GetDailyCredits(ctx context.Context, customerWalletAccount string, date time.Time) (int64, error)
 	GetStatement(ctx context.Context, customerWalletAccount string, from, to time.Time) (*domain.Statement, error)
 }
 
