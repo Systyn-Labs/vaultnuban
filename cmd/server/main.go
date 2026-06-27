@@ -66,6 +66,27 @@ func main() {
 	suspenseRepo := postgres.NewSuspenseRepo(pool)
 	sweepRepo := postgres.NewSweepRepo(pool)
 	relayRepo := postgres.NewRelayRepo(pool)
+	settingsRepo := postgres.NewSettingsRepo(pool)
+
+	// ── Tier limits: seed defaults on first run, then load into cache ─────────
+	tierLimits := config.NewTierLimitsCache()
+	if err := settingsRepo.SeedSetting(ctx, config.TierLimitsKey, config.DefaultTierLimitsJSON); err != nil {
+		logger.Errorf("Bootstrap", "settings seed error: %v", err)
+		os.Exit(1)
+	}
+	raw, err := settingsRepo.GetSetting(ctx, config.TierLimitsKey)
+	if err != nil {
+		logger.Errorf("Bootstrap", "settings load error: %v", err)
+		os.Exit(1)
+	}
+	if raw == nil {
+		raw = config.DefaultTierLimitsJSON
+	}
+	if err := tierLimits.Load(raw); err != nil {
+		logger.Errorf("Bootstrap", "tier limits parse error: %v", err)
+		os.Exit(1)
+	}
+	logger.Log("Bootstrap", "tier limits loaded from database")
 
 	// ── Provider ──────────────────────────────────────────────────────────────
 	prov := nomba.New(
@@ -83,7 +104,7 @@ func main() {
 	suspenseSvc := service.NewSuspenseService(suspenseRepo, txnRepo, customerRepo, vaRepo, auditRepo)
 
 	// ── Reconciliation worker + sweep ─────────────────────────────────────────
-	matcher := recon.NewMatcher(vaRepo, txnRepo, cfg.TierLimits)
+	matcher := recon.NewMatcher(vaRepo, txnRepo, tierLimits)
 	worker := recon.NewWorker(512, matcher, txnRepo, webhookRepo, suspenseRepo, customerRepo)
 
 	// ── Relay dispatcher (FR-11) ───────────────────────────────────────────────
@@ -105,6 +126,8 @@ func main() {
 		TxnStore:      txnRepo,
 		VAStore:       vaRepo,
 		RelayStore:    relayRepo,
+		SettingsStore: settingsRepo,
+		TierLimits:    tierLimits,
 		Redis:         rdb,
 		CustomerSvc:   customerSvc,
 		Provisioning:  provisioningSvc,

@@ -71,6 +71,16 @@ type AuditStore interface {
 	Append(ctx context.Context, entry *domain.AuditEntry) error
 }
 
+// SettingsStore manages application-wide configuration stored in the database.
+type SettingsStore interface {
+	// GetSetting returns the raw JSON value for a key, or nil if not set.
+	GetSetting(ctx context.Context, key string) ([]byte, error)
+	// UpsertSetting inserts or replaces the value for a key.
+	UpsertSetting(ctx context.Context, key string, value []byte) error
+	// SeedSetting inserts the value only if the key does not already exist.
+	SeedSetting(ctx context.Context, key string, value []byte) error
+}
+
 // RelayStore manages tenant webhook relay endpoints and delivery records (FR-11).
 type RelayStore interface {
 	CreateEndpoint(ctx context.Context, ep *domain.RelayEndpoint) error

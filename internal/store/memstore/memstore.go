@@ -714,3 +714,47 @@ func (s *RelayStore) ListPendingRetries(_ context.Context, limit int) ([]*domain
 	}
 	return out, nil
 }
+
+// ── SettingsStore ─────────────────────────────────────────────────────────────
+
+type SettingsStore struct {
+	mu   sync.Mutex
+	data map[string][]byte
+}
+
+func NewSettingsStore() *SettingsStore {
+	return &SettingsStore{data: make(map[string][]byte)}
+}
+
+func (s *SettingsStore) GetSetting(_ context.Context, key string) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.data[key]
+	if !ok {
+		return nil, nil
+	}
+	cp := make([]byte, len(v))
+	copy(cp, v)
+	return cp, nil
+}
+
+func (s *SettingsStore) UpsertSetting(_ context.Context, key string, value []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]byte, len(value))
+	copy(cp, value)
+	s.data[key] = cp
+	return nil
+}
+
+func (s *SettingsStore) SeedSetting(_ context.Context, key string, value []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.data[key]; exists {
+		return nil
+	}
+	cp := make([]byte, len(value))
+	copy(cp, value)
+	s.data[key] = cp
+	return nil
+}

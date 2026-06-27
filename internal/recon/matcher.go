@@ -25,13 +25,13 @@ type MatchResult struct {
 type Matcher struct {
 	accounts   store.VirtualAccountStore
 	txns       store.TransactionStore
-	tierLimits map[int]config.TierLimit
+	tierLimits *config.TierLimitsCache
 }
 
 func NewMatcher(
 	accounts store.VirtualAccountStore,
 	txns store.TransactionStore,
-	tierLimits map[int]config.TierLimit,
+	tierLimits *config.TierLimitsCache,
 ) *Matcher {
 	return &Matcher{accounts: accounts, txns: txns, tierLimits: tierLimits}
 }
@@ -209,7 +209,7 @@ func (m *Matcher) CheckTierLimitsForCustomer(
 	amountKobo int64,
 	kycTier int,
 ) (domain.SuspenseReason, error) {
-	limits, ok := m.tierLimits[kycTier]
+	limits, ok := m.tierLimits.Get(kycTier)
 	if !ok {
 		return "", nil // unconfigured tier = uncapped
 	}

@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -33,9 +32,6 @@ type Config struct {
 
 	// Internal auth
 	InternalSweepToken string
-
-	// KYC tier limits keyed by tier number (1, 2, 3)
-	TierLimits map[int]TierLimit
 
 	// Server
 	Port string
@@ -70,11 +66,6 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	c.TierLimits, err = parseTierLimits()
-	if err != nil {
-		return nil, err
-	}
-
 	return c, nil
 }
 
@@ -98,22 +89,3 @@ func parseDuration(key, fallback string) (time.Duration, error) {
 	return d, nil
 }
 
-func parseTierLimits() (map[int]TierLimit, error) {
-	raw := envOr("TIER_LIMITS_JSON", `{"1":{"daily_credit_kobo":5000000,"max_balance_kobo":30000000},"2":{"daily_credit_kobo":20000000,"max_balance_kobo":500000000},"3":{"daily_credit_kobo":0,"max_balance_kobo":0}}`)
-
-	// JSON keys are strings; unmarshal into string-keyed map first.
-	var strMap map[string]TierLimit
-	if err := json.Unmarshal([]byte(raw), &strMap); err != nil {
-		return nil, fmt.Errorf("config: TIER_LIMITS_JSON is not valid JSON: %w", err)
-	}
-
-	out := make(map[int]TierLimit, len(strMap))
-	for k, v := range strMap {
-		var tier int
-		if _, err := fmt.Sscanf(k, "%d", &tier); err != nil {
-			return nil, fmt.Errorf("config: TIER_LIMITS_JSON key %q is not an integer tier", k)
-		}
-		out[tier] = v
-	}
-	return out, nil
-}

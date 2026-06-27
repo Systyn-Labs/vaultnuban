@@ -13,6 +13,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -39,9 +40,17 @@ type harness struct {
 	sweep    *recon.SweepRunner
 }
 
-func newHarness(tierLimits map[int]config.TierLimit) *harness {
-	if tierLimits == nil {
-		tierLimits = map[int]config.TierLimit{}
+func newHarness(limits map[int]config.TierLimit) *harness {
+	tierLimits := config.NewTierLimitsCache()
+	if limits != nil {
+		raw, _ := json.Marshal(func() map[string]config.TierLimit {
+			m := make(map[string]config.TierLimit, len(limits))
+			for k, v := range limits {
+				m[fmt.Sprintf("%d", k)] = v
+			}
+			return m
+		}())
+		_ = tierLimits.Load(raw)
 	}
 
 	txnStore  := memstore.NewTransactionStore()

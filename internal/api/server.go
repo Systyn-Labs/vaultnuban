@@ -10,6 +10,7 @@ import (
 
 	"github.com/systynlabs/vaultnuban/internal/api/handlers"
 	"github.com/systynlabs/vaultnuban/internal/api/middleware"
+	"github.com/systynlabs/vaultnuban/internal/config"
 	"github.com/systynlabs/vaultnuban/internal/provider"
 	"github.com/systynlabs/vaultnuban/internal/recon"
 	"github.com/systynlabs/vaultnuban/internal/service"
@@ -24,6 +25,8 @@ type Dependencies struct {
 	TxnStore      store.TransactionStore
 	VAStore       store.VirtualAccountStore
 	RelayStore    store.RelayStore
+	SettingsStore store.SettingsStore
+	TierLimits    *config.TierLimitsCache
 	Redis         *redis.Client
 	CustomerSvc   *service.CustomerService
 	Provisioning  *service.ProvisioningService
@@ -55,6 +58,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	txnH := handlers.NewTransactionHandler(deps.TxnStore, deps.VAStore, deps.CustomerStore)
 	suspenseH := handlers.NewSuspenseHandler(deps.SuspenseSvc)
 	relayH := handlers.NewRelayHandler(deps.RelayStore)
+	settingsH := handlers.NewSettingsHandler(deps.SettingsStore, deps.TierLimits)
 
 	// Authenticated tenant API
 	r.Group(func(r chi.Router) {
@@ -98,6 +102,13 @@ func NewRouter(deps Dependencies) http.Handler {
 	// the response body, so the sweep still executes.
 	r.Get("/internal/sweep", sweepH.HandleSweep)
 	r.Head("/internal/sweep", sweepH.HandleSweep)
+
+	// Admin settings — protected by INTERNAL_SWEEP_TOKEN
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.SweepTokenAuth(deps.SweepToken))
+		r.Get("/internal/settings/tier-limits", settingsH.GetTierLimits)
+		r.Put("/internal/settings/tier-limits", settingsH.PutTierLimits)
+	})
 
 	return r
 }
