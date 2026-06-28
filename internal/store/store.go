@@ -13,6 +13,7 @@ import (
 type TenantStore interface {
 	CreateTenant(ctx context.Context, name string) (*domain.Tenant, error)
 	GetTenantByAPIKey(ctx context.Context, keyHash string) (*domain.Tenant, *domain.APIKey, error)
+	CreateAPIKey(ctx context.Context, tenantID, rawKey, keyHash, keyPrefix string) (*domain.APIKey, error)
 }
 
 // CustomerStore manages customers and their identity records.
@@ -21,6 +22,7 @@ type CustomerStore interface {
 	GetCustomer(ctx context.Context, tenantID, customerID string) (*domain.Customer, error)
 	GetCustomerByExternalRef(ctx context.Context, tenantID, externalRef string) (*domain.Customer, error)
 	UpdateKYCTier(ctx context.Context, customerID string, newTier int, actor string) error
+	ListCustomers(ctx context.Context, tenantID string, limit int, cursor string) ([]*domain.Customer, string, error)
 }
 
 // VirtualAccountStore manages virtual account lifecycle.
@@ -69,6 +71,13 @@ type SweepStore interface {
 // AuditStore appends immutable audit entries.
 type AuditStore interface {
 	Append(ctx context.Context, entry *domain.AuditEntry) error
+}
+
+// AuthStore manages human user credentials for the dashboard login.
+type AuthStore interface {
+	CreateCredential(ctx context.Context, cred *domain.UserCredential) error
+	// GetCredentialByEmail returns the credential, its tenant (nil for admin), and the tenant's active API key (nil for admin).
+	GetCredentialByEmail(ctx context.Context, email string) (*domain.UserCredential, *domain.Tenant, *domain.APIKey, error)
 }
 
 // SettingsStore manages application-wide configuration stored in the database.

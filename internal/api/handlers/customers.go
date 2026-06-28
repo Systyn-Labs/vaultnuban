@@ -9,6 +9,7 @@ import (
 	"github.com/systynlabs/vaultnuban/internal/api/problem"
 	"github.com/systynlabs/vaultnuban/internal/domain"
 	"github.com/systynlabs/vaultnuban/internal/service"
+	"github.com/systynlabs/vaultnuban/internal/store"
 )
 
 // ── Request / response types ──────────────────────────────────────────────────
@@ -48,11 +49,12 @@ type updateKYCRequest struct {
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 type CustomerHandler struct {
-	svc *service.CustomerService
+	svc        *service.CustomerService
+	customerDB store.CustomerStore
 }
 
-func NewCustomerHandler(svc *service.CustomerService) *CustomerHandler {
-	return &CustomerHandler{svc: svc}
+func NewCustomerHandler(svc *service.CustomerService, customerDB store.CustomerStore) *CustomerHandler {
+	return &CustomerHandler{svc: svc, customerDB: customerDB}
 }
 
 // CreateCustomer handles POST /v1/customers.
@@ -97,6 +99,29 @@ func (h *CustomerHandler) CreateCustomer(w http.ResponseWriter, r *http.Request)
 	// could return a bool, but here we use the convention that existing records return 200).
 	status := http.StatusCreated
 	writeJSON(w, status, toCustomerResponse(customer))
+}
+
+// ListCustomers handles GET /v1/customers.
+func (h *CustomerHandler) ListCustomers(w http.ResponseWriter, r *http.Request) {
+	tenant := middleware.TenantFromContext(r.Context())
+	cursor := r.URL.Query().Get("cursor")
+
+	customers, nextCursor, err := h.customerDB.ListCustomers(r.Context(), tenant.ID, 50, cursor)
+	if err != nil {
+		problem.InternalServerError(w, "failed to list customers")
+		return
+	}
+
+	data := make([]customerResponse, 0, len(customers))
+	for _, c := range customers {
+		data = append(data, toCustomerResponse(c))
+	}
+
+	resp := map[string]any{"data": data}
+	if nextCursor != "" {
+		resp["next_cursor"] = nextCursor
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // UpdateKYCTier handles PATCH /v1/customers/{customerID}/identity.

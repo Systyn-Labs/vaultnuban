@@ -26,6 +26,19 @@ func (r *TenantRepo) CreateTenant(ctx context.Context, name string) (*domain.Ten
 	return &t, nil
 }
 
+func (r *TenantRepo) CreateAPIKey(ctx context.Context, tenantID, rawKey, keyHash, keyPrefix string) (*domain.APIKey, error) {
+	var k domain.APIKey
+	err := r.pool.QueryRow(ctx,
+		`INSERT INTO api_keys(tenant_id, raw_key, key_hash, key_prefix) VALUES($1,$2,$3,$4)
+		 RETURNING id, tenant_id, COALESCE(raw_key,''), key_hash, key_prefix, active`,
+		tenantID, rawKey, keyHash, keyPrefix,
+	).Scan(&k.ID, &k.TenantID, &k.RawKey, &k.KeyHash, &k.KeyPrefix, &k.Active)
+	if err != nil {
+		return nil, fmt.Errorf("tenant repo: create api key: %w", err)
+	}
+	return &k, nil
+}
+
 // GetTenantByAPIKey looks up an active API key by its SHA-256 hash and returns
 // the owning tenant. Returns nil, nil, nil when not found (caller maps to 401).
 func (r *TenantRepo) GetTenantByAPIKey(ctx context.Context, keyHash string) (*domain.Tenant, *domain.APIKey, error) {

@@ -104,6 +104,69 @@ func (r *CustomerRepo) UpdateKYCTier(ctx context.Context, customerID string, new
 	return nil
 }
 
+func (r *CustomerRepo) ListCustomers(ctx context.Context, tenantID string, limit int, cursor string) ([]*domain.Customer, string, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	// cursor is the ID of the last item seen; use created_at of that row for keyset pagination
+	var query string
+	var args []any
+	if cursor == "" {
+		query = `
+			SELECT c.id, c.tenant_id, c.external_ref, c.display_name, c.status, c.created_at, c.updated_at,
+			       COALESCE(i.id,''), COALESCE(i.customer_id,''), i.bvn_masked, i.nin_masked,
+			       COALESCE(i.kyc_tier,0), COALESCE(i.verification_status,''), i.created_at, i.updated_at
+			FROM customers c
+			LEFT JOIN identities i ON i.customer_id = c.id
+			WHERE c.tenant_id = $1
+			ORDER BY c.created_at DESC, c.id DESC
+			LIMIT $2`
+		args = []any{tenantID, limit + 1}
+	} else {
+		query = `
+			SELECT c.id, c.tenant_id, c.external_ref, c.display_name, c.status, c.created_at, c.updated_at,
+			       COALESCE(i.id,''), COALESCE(i.customer_id,''), i.bvn_masked, i.nin_masked,
+			       COALESCE(i.kyc_tier,0), COALESCE(i.verification_status,''), i.created_at, i.updated_at
+			FROM customers c
+			LEFT JOIN identities i ON i.customer_id = c.id
+			WHERE c.tenant_id = $1
+			  AND (c.created_at, c.id) < (SELECT created_at, id FROM customers WHERE id = $3)
+			ORDER BY c.created_at DESC, c.id DESC
+			LIMIT $2`
+		args = []any{tenantID, limit + 1, cursor}
+	}
+
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, "", fmt.Errorf("customer repo: list: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*domain.Customer
+	for rows.Next() {
+		var c domain.Customer
+		var id domain.Identity
+		if err := rows.Scan(
+			&c.ID, &c.TenantID, &c.ExternalRef, &c.DisplayName, &c.Status, &c.CreatedAt, &c.UpdatedAt,
+			&id.ID, &id.CustomerID, &id.BVNMasked, &id.NINMasked, &id.KYCTier, &id.VerificationStatus, &id.CreatedAt, &id.UpdatedAt,
+		); err != nil {
+			return nil, "", fmt.Errorf("customer repo: list scan: %w", err)
+		}
+		c.Identity = &id
+		out = append(out, &c)
+	}
+	if rows.Err() != nil {
+		return nil, "", fmt.Errorf("customer repo: list iter: %w", rows.Err())
+	}
+
+	var nextCursor string
+	if len(out) > limit {
+		nextCursor = out[limit-1].ID
+		out = out[:limit]
+	}
+	return out, nextCursor, nil
+}
+
 func (r *CustomerRepo) scanCustomer(ctx context.Context, query string, args ...any) (*domain.Customer, error) {
 	var c domain.Customer
 	var id domain.Identity

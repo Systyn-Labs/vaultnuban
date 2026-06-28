@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/systynlabs/vaultnuban/internal/api/handlers"
@@ -20,6 +21,7 @@ import (
 // Dependencies groups every external dependency the API needs.
 type Dependencies struct {
 	TenantStore   store.TenantStore
+	AuthStore     store.AuthStore
 	WebhookStore  store.WebhookEventStore
 	CustomerStore store.CustomerStore
 	TxnStore      store.TransactionStore
@@ -46,12 +48,24 @@ func NewRouter(deps Dependencies) http.Handler {
 	r.Use(chimw.Recoverer)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger)
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins:   []string{"https://vaultnuban-client.pages.dev", "http://localhost:5173", "http://localhost:4173"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Idempotency-Key", "X-Request-ID"},
+		ExposedHeaders:   []string{"X-Request-ID"},
+		AllowCredentials: false,
+		MaxAge:           300,
+	}))
 
 	// Infra endpoints — no auth
 	r.Get("/healthz", handleHealthz)
 
+	// Human auth endpoints — no tenant auth
+	authH := handlers.NewAuthHandler(deps.AuthStore, deps.TenantStore)
+	r.Post("/auth/login", authH.Login)
+
 	// Initialise handlers
-	customerH := handlers.NewCustomerHandler(deps.CustomerSvc)
+	customerH := handlers.NewCustomerHandler(deps.CustomerSvc, deps.CustomerStore)
 	vaH := handlers.NewVAHandler(deps.Provisioning)
 	webhookH := handlers.NewWebhookHandler(deps.Provider, deps.WebhookStore, deps.Worker)
 	sweepH := handlers.NewSweepHandler(deps.Sweep, deps.SweepToken)
@@ -67,6 +81,7 @@ func NewRouter(deps Dependencies) http.Handler {
 
 		r.Route("/v1", func(r chi.Router) {
 			// Customer management
+			r.Get("/customers", customerH.ListCustomers)
 			r.Post("/customers", customerH.CreateCustomer)
 
 			r.Route("/customers/{customerID}", func(r chi.Router) {
@@ -97,17 +112,16 @@ func NewRouter(deps Dependencies) http.Handler {
 	r.Post("/webhooks/nomba", webhookH.HandleNombaWebhook)
 
 	// Internal cron endpoint — authenticated via INTERNAL_SWEEP_TOKEN (FR-6).
-	// HEAD is registered alongside GET so UptimeRobot free plan can trigger it
-	// (free plan only supports HEAD). Chi runs the handler for HEAD but strips
-	// the response body, so the sweep still executes.
 	r.Get("/internal/sweep", sweepH.HandleSweep)
 	r.Head("/internal/sweep", sweepH.HandleSweep)
 
-	// Admin settings — protected by INTERNAL_SWEEP_TOKEN
+	// Admin settings + onboarding — protected by INTERNAL_SWEEP_TOKEN
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.SweepTokenAuth(deps.SweepToken))
 		r.Get("/internal/settings/tier-limits", settingsH.GetTierLimits)
 		r.Put("/internal/settings/tier-limits", settingsH.PutTierLimits)
+		r.Post("/internal/onboard", authH.Onboard)
+		r.Post("/internal/onboard-admin", authH.OnboardAdmin)
 	})
 
 	return r

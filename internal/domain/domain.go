@@ -17,9 +17,21 @@ type Tenant struct {
 type APIKey struct {
 	ID        string
 	TenantID  string
+	RawKey    string // stored for demo login; empty for keys created before migration 018
 	KeyHash   string
 	KeyPrefix string
 	Active    bool
+}
+
+// UserCredential is a human login tied to a tenant (or nil tenant_id for platform admin).
+type UserCredential struct {
+	ID           string
+	TenantID     *string // nil for platform admin
+	Email        string
+	PasswordHash string
+	Name         string
+	Role         string // "dev" | "ops" | "admin"
+	CreatedAt    time.Time
 }
 
 // ── Customer & identity ───────────────────────────────────────────────────────

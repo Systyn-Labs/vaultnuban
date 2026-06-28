@@ -63,6 +63,15 @@ func (s *TenantStore) GetTenantByAPIKey(_ context.Context, keyHash string) (*dom
 	return s.tenants[tid], key, nil
 }
 
+func (s *TenantStore) CreateAPIKey(_ context.Context, tenantID, rawKey, keyHash, keyPrefix string) (*domain.APIKey, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := &domain.APIKey{ID: nextID("key"), TenantID: tenantID, RawKey: rawKey, KeyHash: keyHash, KeyPrefix: keyPrefix, Active: true}
+	s.keys[keyHash] = k
+	s.byKey[keyHash] = tenantID
+	return k, nil
+}
+
 // SeedAPIKey registers a key hash → tenant mapping for tests.
 func (s *TenantStore) SeedAPIKey(tenantID, keyHash string) {
 	s.mu.Lock()
@@ -149,6 +158,52 @@ func (s *CustomerStore) UpdateKYCTier(_ context.Context, customerID string, newT
 	}
 	c.Identity.KYCTier = newTier
 	return nil
+}
+
+func (s *CustomerStore) ListCustomers(_ context.Context, tenantID string, limit int, _ string) ([]*domain.Customer, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*domain.Customer
+	for _, c := range s.customers {
+		if c.TenantID == tenantID {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, "", nil
+}
+
+// ── AuthStore ─────────────────────────────────────────────────────────────────
+
+type AuthStore struct {
+	mu    sync.Mutex
+	creds map[string]*domain.UserCredential // email → cred
+}
+
+func NewAuthStore() *AuthStore {
+	return &AuthStore{creds: make(map[string]*domain.UserCredential)}
+}
+
+func (s *AuthStore) CreateCredential(_ context.Context, cred *domain.UserCredential) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := *cred
+	c.ID = nextID("cred")
+	s.creds[cred.Email] = &c
+	return nil
+}
+
+func (s *AuthStore) GetCredentialByEmail(_ context.Context, email string) (*domain.UserCredential, *domain.Tenant, *domain.APIKey, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cred, ok := s.creds[email]
+	if !ok {
+		return nil, nil, nil, nil
+	}
+	return cred, nil, nil, nil
 }
 
 // ── VirtualAccountStore ───────────────────────────────────────────────────────

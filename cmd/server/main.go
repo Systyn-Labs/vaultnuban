@@ -58,6 +58,7 @@ func main() {
 
 	// ── Repos ─────────────────────────────────────────────────────────────────
 	tenantRepo := postgres.NewTenantRepo(pool)
+	authRepo := postgres.NewAuthRepo(pool)
 	customerRepo := postgres.NewCustomerRepo(pool)
 	vaRepo := postgres.NewVARepo(pool)
 	auditRepo := postgres.NewAuditRepo(pool)
@@ -121,6 +122,7 @@ func main() {
 	// ── HTTP server ───────────────────────────────────────────────────────────
 	deps := api.Dependencies{
 		TenantStore:   tenantRepo,
+		AuthStore:     authRepo,
 		WebhookStore:  webhookRepo,
 		CustomerStore: customerRepo,
 		TxnStore:      txnRepo,
