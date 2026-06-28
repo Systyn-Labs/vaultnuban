@@ -56,9 +56,11 @@ func (r *SuspenseRepo) ListSuspenseItems(
 	}
 
 	// Join through transactions → virtual_accounts → customers to scope by tenant.
+	// Also pull amount_kobo and nuban for display in the UI.
 	query := `
 		SELECT s.id, s.transaction_id, s.reason, s.status,
-		       s.resolved_by, s.resolved_at, s.notes, s.created_at
+		       s.resolved_by, s.resolved_at, s.notes, s.created_at,
+		       t.amount_kobo, COALESCE(va.nuban, '')
 		FROM suspense_items s
 		JOIN transactions t ON t.id = s.transaction_id
 		LEFT JOIN virtual_accounts va ON va.id = t.virtual_account_id
@@ -87,7 +89,8 @@ func (r *SuspenseRepo) ListSuspenseItems(
 		var s domain.SuspenseItem
 		var reason string
 		if err := rows.Scan(&s.ID, &s.TransactionID, &reason, &s.Status,
-			&s.ResolvedBy, &s.ResolvedAt, &s.Notes, &s.CreatedAt); err != nil {
+			&s.ResolvedBy, &s.ResolvedAt, &s.Notes, &s.CreatedAt,
+			&s.AmountKobo, &s.NUBAN); err != nil {
 			return nil, "", fmt.Errorf("suspense repo: scan: %w", err)
 		}
 		s.Reason = domain.SuspenseReason(reason)

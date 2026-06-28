@@ -16,12 +16,13 @@ import (
 
 // AuthHandler handles human login and tenant onboarding.
 type AuthHandler struct {
-	auth   store.AuthStore
-	tenant store.TenantStore
+	auth       store.AuthStore
+	tenant     store.TenantStore
+	sweepToken string // returned to admin users on login so they can call /internal/onboard
 }
 
-func NewAuthHandler(auth store.AuthStore, tenant store.TenantStore) *AuthHandler {
-	return &AuthHandler{auth: auth, tenant: tenant}
+func NewAuthHandler(auth store.AuthStore, tenant store.TenantStore, sweepToken string) *AuthHandler {
+	return &AuthHandler{auth: auth, tenant: tenant, sweepToken: sweepToken}
 }
 
 // Onboard creates a tenant with credentials for its users and a shared API key.
@@ -170,6 +171,10 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		resp["api_key"] = apiKey.RawKey
 		resp["key_prefix"] = apiKey.KeyPrefix
 	}
+	// Admin users receive the operator token so they can call /internal/onboard from the dashboard.
+	if cred.Role == "admin" && h.sweepToken != "" {
+		resp["admin_token"] = h.sweepToken
+	}
 
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -191,4 +196,28 @@ func generateAPIKey() (raw, hash, prefix string, err error) {
 		prefix = raw
 	}
 	return
+}
+
+// ListTenants handles GET /internal/tenants.
+// Returns all tenants registered in the platform (admin/sweep-token protected).
+func (h *AuthHandler) ListTenants(w http.ResponseWriter, r *http.Request) {
+	tenants, err := h.tenant.ListTenants(r.Context())
+	if err != nil {
+		problem.InternalServerError(w, "failed to list tenants")
+		return
+	}
+	type tenantResp struct {
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		CreatedAt string `json:"created_at"`
+	}
+	data := make([]tenantResp, 0, len(tenants))
+	for _, t := range tenants {
+		data = append(data, tenantResp{
+			ID:        t.ID,
+			Name:      t.Name,
+			CreatedAt: t.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": data})
 }

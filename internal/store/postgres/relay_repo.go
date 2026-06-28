@@ -86,6 +86,79 @@ func (r *RelayRepo) UpdateDelivery(ctx context.Context, d *domain.RelayDelivery)
 	return err
 }
 
+func (r *RelayRepo) GetDelivery(ctx context.Context, id string) (*domain.RelayDelivery, error) {
+	var d domain.RelayDelivery
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, endpoint_id, event_type, payload, attempt, status,
+		       status_code, error, next_retry_at, delivered_at, created_at
+		FROM relay_deliveries WHERE id = $1`, id,
+	).Scan(
+		&d.ID, &d.EndpointID, &d.EventType, &d.Payload, &d.Attempt, &d.Status,
+		&d.StatusCode, &d.Error, &d.NextRetryAt, &d.DeliveredAt, &d.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("relay repo: get delivery: %w", err)
+	}
+	return &d, nil
+}
+
+func (r *RelayRepo) ListDeliveries(ctx context.Context, tenantID string, limit int, cursor string) ([]*domain.RelayDelivery, string, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	const base = `
+		SELECT d.id, d.endpoint_id, d.event_type, d.payload, d.attempt, d.status,
+		       d.status_code, d.error, d.next_retry_at, d.delivered_at, d.created_at
+		FROM relay_deliveries d
+		JOIN relay_endpoints e ON e.id = d.endpoint_id
+		WHERE e.tenant_id = $1`
+
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if cursor == "" {
+		rows, err = r.pool.Query(ctx, base+`
+		ORDER BY d.created_at DESC, d.id DESC
+		LIMIT $2`, tenantID, limit+1)
+	} else {
+		rows, err = r.pool.Query(ctx, base+`
+		  AND (d.created_at, d.id) < (SELECT created_at, id FROM relay_deliveries WHERE id = $3)
+		ORDER BY d.created_at DESC, d.id DESC
+		LIMIT $2`, tenantID, limit+1, cursor)
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("relay repo: list deliveries: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*domain.RelayDelivery
+	for rows.Next() {
+		var d domain.RelayDelivery
+		if err := rows.Scan(
+			&d.ID, &d.EndpointID, &d.EventType, &d.Payload, &d.Attempt, &d.Status,
+			&d.StatusCode, &d.Error, &d.NextRetryAt, &d.DeliveredAt, &d.CreatedAt,
+		); err != nil {
+			return nil, "", fmt.Errorf("relay repo: scan delivery: %w", err)
+		}
+		out = append(out, &d)
+	}
+	if rows.Err() != nil {
+		return nil, "", fmt.Errorf("relay repo: list deliveries iter: %w", rows.Err())
+	}
+
+	var nextCursor string
+	if len(out) > limit {
+		nextCursor = out[limit-1].ID
+		out = out[:limit]
+	}
+	return out, nextCursor, nil
+}
+
 func (r *RelayRepo) ListPendingRetries(ctx context.Context, limit int) ([]*domain.RelayDelivery, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, endpoint_id, event_type, payload, attempt, status,

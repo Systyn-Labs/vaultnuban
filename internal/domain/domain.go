@@ -21,6 +21,7 @@ type APIKey struct {
 	KeyHash   string
 	KeyPrefix string
 	Active    bool
+	CreatedAt time.Time
 }
 
 // UserCredential is a human login tied to a tenant (or nil tenant_id for platform admin).
@@ -89,6 +90,8 @@ type VirtualAccount struct {
 	Status          VAStatus
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	// Enriched from the linked customer (populated by ListVAs)
+	CustomerDisplayName string
 }
 
 type VAStatus string
@@ -132,6 +135,8 @@ type Transaction struct {
 	Raw              []byte
 	OccurredAt       time.Time
 	CreatedAt        time.Time
+	// Enriched from the linked virtual account (populated by ListTenantTransactions)
+	NUBAN string
 }
 
 type LedgerEntry struct {
@@ -193,6 +198,15 @@ type SuspenseItem struct {
 	ResolvedAt    *time.Time
 	Notes         *string
 	CreatedAt     time.Time
+	// Enriched from the linked transaction + virtual account (populated by ListSuspenseItems)
+	AmountKobo int64
+	NUBAN      string
+}
+
+// CrossTenantSuspenseItem is a SuspenseItem enriched with tenant name (admin view).
+type CrossTenantSuspenseItem struct {
+	SuspenseItem
+	TenantName string
 }
 
 type SuspenseReason string
@@ -245,6 +259,53 @@ type RelayDelivery struct {
 	NextRetryAt *time.Time
 	DeliveredAt *time.Time
 	CreatedAt   time.Time
+}
+
+// ── Platform health (GlobalHealth dashboard) ──────────────────────────────────
+
+type PlatformHealth struct {
+	Ledger              LedgerHealth
+	LastSweep           *SweepHealthSnapshot // nil if no sweep has ever run
+	Webhook24h          WebhookHealth
+	CrossTenantSuspense SuspenseHealth
+	ActiveTenants       int
+	TotalTenants        int
+	TenantHealth        []TenantHealth
+	CheckedAt           time.Time
+}
+
+type LedgerHealth struct {
+	DebitsKobo  int64
+	CreditsKobo int64
+	Balanced    bool
+}
+
+type SweepHealthSnapshot struct {
+	Posted    int
+	Found     int
+	Suspensed int
+	RanAt     time.Time
+}
+
+type WebhookHealth struct {
+	Delivered int64
+	Total     int64
+}
+
+type SuspenseHealth struct {
+	AmountKobo  int64
+	ItemCount   int64
+	TenantCount int64
+}
+
+type TenantHealth struct {
+	ID               string
+	Name             string
+	Customers        int64
+	Accounts         int64
+	OpenSuspenseKobo int64
+	LastActivity     *time.Time
+	Status           string
 }
 
 // ── Audit ─────────────────────────────────────────────────────────────────────

@@ -114,8 +114,8 @@ func (r *CustomerRepo) ListCustomers(ctx context.Context, tenantID string, limit
 	if cursor == "" {
 		query = `
 			SELECT c.id, c.tenant_id, c.external_ref, c.display_name, c.status, c.created_at, c.updated_at,
-			       COALESCE(i.id,''), COALESCE(i.customer_id,''), i.bvn_masked, i.nin_masked,
-			       COALESCE(i.kyc_tier,0), COALESCE(i.verification_status,''), i.created_at, i.updated_at
+			       COALESCE(i.id::text,''), COALESCE(i.customer_id::text,''), i.bvn_masked, i.nin_masked,
+			       COALESCE(i.kyc_tier,0), COALESCE(i.verification_status,''), COALESCE(i.created_at,NOW()), COALESCE(i.updated_at,NOW())
 			FROM customers c
 			LEFT JOIN identities i ON i.customer_id = c.id
 			WHERE c.tenant_id = $1
@@ -125,8 +125,8 @@ func (r *CustomerRepo) ListCustomers(ctx context.Context, tenantID string, limit
 	} else {
 		query = `
 			SELECT c.id, c.tenant_id, c.external_ref, c.display_name, c.status, c.created_at, c.updated_at,
-			       COALESCE(i.id,''), COALESCE(i.customer_id,''), i.bvn_masked, i.nin_masked,
-			       COALESCE(i.kyc_tier,0), COALESCE(i.verification_status,''), i.created_at, i.updated_at
+			       COALESCE(i.id::text,''), COALESCE(i.customer_id::text,''), i.bvn_masked, i.nin_masked,
+			       COALESCE(i.kyc_tier,0), COALESCE(i.verification_status,''), COALESCE(i.created_at,NOW()), COALESCE(i.updated_at,NOW())
 			FROM customers c
 			LEFT JOIN identities i ON i.customer_id = c.id
 			WHERE c.tenant_id = $1

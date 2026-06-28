@@ -29,6 +29,8 @@ type suspenseItemResponse struct {
 	Notes         *string `json:"notes,omitempty"`
 	ResolvedBy    *string `json:"resolved_by,omitempty"`
 	CreatedAt     string  `json:"created_at"`
+	AmountKobo    int64   `json:"amount_kobo"`
+	NUBAN         string  `json:"nuban,omitempty"`
 }
 
 type listSuspenseResponse struct {
@@ -47,7 +49,7 @@ func (h *SuspenseHandler) ListSuspense(w http.ResponseWriter, r *http.Request) {
 
 	items, nextCursor, err := h.svc.ListItems(r.Context(), tenant.ID, limit, cursor)
 	if err != nil {
-		problem.InternalServerError(w, "failed to list suspense items")
+		serverErr(w, r, "ListSuspense", err)
 		return
 	}
 
@@ -64,12 +66,14 @@ func (h *SuspenseHandler) ListSuspense(w http.ResponseWriter, r *http.Request) {
 			Notes:         item.Notes,
 			ResolvedBy:    item.ResolvedBy,
 			CreatedAt:     item.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			AmountKobo:    item.AmountKobo,
+			NUBAN:         item.NUBAN,
 		})
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// ResolveSuspense handles POST /v1/suspense/{itemID}/resolve.
+// ResolveSuspense handles PATCH /v1/suspense/{itemID}.
 func (h *SuspenseHandler) ResolveSuspense(w http.ResponseWriter, r *http.Request) {
 	itemID := chi.URLParam(r, "itemID")
 	tenant := middleware.TenantFromContext(r.Context())
@@ -101,7 +105,7 @@ func (h *SuspenseHandler) ResolveSuspense(w http.ResponseWriter, r *http.Request
 		case errors.As(err, &ve):
 			problem.UnprocessableEntity(w, ve.Field, ve.Detail)
 		default:
-			problem.InternalServerError(w, "failed to resolve suspense item")
+			serverErr(w, r, "ResolveSuspense", err)
 		}
 		return
 	}

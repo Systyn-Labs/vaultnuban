@@ -92,6 +92,32 @@ func (r *TransactionRepo) GetTransaction(ctx context.Context, txID string) (*dom
 	return &tx, nil
 }
 
+func (r *TransactionRepo) GetTransactionForTenant(ctx context.Context, tenantID, txID string) (*domain.Transaction, error) {
+	var tx domain.Transaction
+	err := r.pool.QueryRow(ctx, `
+		SELECT t.id, t.virtual_account_id, t.session_id, t.amount_kobo, t.direction, t.source,
+		       t.status, t.sender_name, t.sender_bank, t.narration, t.raw, t.occurred_at, t.created_at,
+		       va.nuban
+		FROM transactions t
+		JOIN virtual_accounts va ON va.id = t.virtual_account_id
+		JOIN customers c ON c.id = va.customer_id
+		WHERE t.id = $1 AND c.tenant_id = $2`,
+		txID, tenantID,
+	).Scan(
+		&tx.ID, &tx.VirtualAccountID, &tx.SessionID, &tx.AmountKobo,
+		&tx.Direction, &tx.Source, &tx.Status,
+		&tx.SenderName, &tx.SenderBank, &tx.Narration,
+		&tx.Raw, &tx.OccurredAt, &tx.CreatedAt, &tx.NUBAN,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("transaction repo: get for tenant: %w", err)
+	}
+	return &tx, nil
+}
+
 func (r *TransactionRepo) ListTransactions(
 	ctx context.Context,
 	vaID string,
@@ -277,4 +303,54 @@ func assertBalanced(entries []domain.LedgerEntry) error {
 		return fmt.Errorf("ledger: unbalanced entries — debits=%d credits=%d", debits, credits)
 	}
 	return nil
+}
+
+// ListTenantTransactions lists all transactions across all virtual accounts for a tenant.
+func (r *TransactionRepo) ListTenantTransactions(ctx context.Context, tenantID string, limit int, cursor string) ([]*domain.Transaction, string, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	base := `
+		SELECT t.id, t.virtual_account_id, t.session_id, t.amount_kobo, t.direction,
+		       t.source, t.status, t.sender_name, t.sender_bank, t.narration,
+		       t.occurred_at, COALESCE(va.nuban, '')
+		FROM transactions t
+		LEFT JOIN virtual_accounts va ON va.id = t.virtual_account_id
+		LEFT JOIN customers c ON c.id = va.customer_id
+		WHERE c.tenant_id = $1`
+
+	var rows pgx.Rows
+	var err error
+	if cursor == "" {
+		rows, err = r.pool.Query(ctx, base+` ORDER BY t.occurred_at DESC LIMIT $2`, tenantID, limit+1)
+	} else {
+		rows, err = r.pool.Query(ctx, base+`
+			AND t.occurred_at < (SELECT occurred_at FROM transactions WHERE id = $3)
+			ORDER BY t.occurred_at DESC LIMIT $2`, tenantID, limit+1, cursor)
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("transaction repo: list tenant: %w", err)
+	}
+	defer rows.Close()
+
+	var txns []*domain.Transaction
+	for rows.Next() {
+		var tx domain.Transaction
+		if err := rows.Scan(
+			&tx.ID, &tx.VirtualAccountID, &tx.SessionID, &tx.AmountKobo,
+			&tx.Direction, &tx.Source, &tx.Status,
+			&tx.SenderName, &tx.SenderBank, &tx.Narration,
+			&tx.OccurredAt, &tx.NUBAN,
+		); err != nil {
+			return nil, "", fmt.Errorf("transaction repo: list tenant scan: %w", err)
+		}
+		txns = append(txns, &tx)
+	}
+
+	var nextCursor string
+	if len(txns) > limit {
+		nextCursor = txns[limit-1].ID
+		txns = txns[:limit]
+	}
+	return txns, nextCursor, nil
 }

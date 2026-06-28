@@ -108,6 +108,20 @@ func (d *Dispatcher) RetryPending(ctx context.Context) {
 	}
 }
 
+// Replay immediately re-dispatches a single delivery to its endpoint.
+// It is safe to call on dead_letter deliveries — attempt count is preserved for observability.
+func (d *Dispatcher) Replay(ctx context.Context, delivery *domain.RelayDelivery) error {
+	ep, err := d.store.GetEndpoint(ctx, delivery.EndpointID)
+	if err != nil {
+		return fmt.Errorf("relay: get endpoint for replay: %w", err)
+	}
+	if ep == nil || !ep.Active {
+		return fmt.Errorf("relay: endpoint not found or inactive")
+	}
+	go d.deliver(context.Background(), ep, delivery.EventType, delivery.Payload, delivery.Attempt+1)
+	return nil
+}
+
 // deliver makes one HTTP attempt and records the result.
 func (d *Dispatcher) deliver(ctx context.Context, ep *domain.RelayEndpoint, eventType string, body []byte, attempt int) {
 	sig := sign(body, ep.SecretHash)

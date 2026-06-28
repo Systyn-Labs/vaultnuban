@@ -90,7 +90,7 @@ func (h *CustomerHandler) CreateCustomer(w http.ResponseWriter, r *http.Request)
 			problem.UnprocessableEntity(w, "identity-required", ve.Detail)
 			return
 		}
-		problem.InternalServerError(w, "failed to create customer")
+		serverErr(w, r, "CreateCustomer", err)
 		return
 	}
 
@@ -108,7 +108,7 @@ func (h *CustomerHandler) ListCustomers(w http.ResponseWriter, r *http.Request) 
 
 	customers, nextCursor, err := h.customerDB.ListCustomers(r.Context(), tenant.ID, 50, cursor)
 	if err != nil {
-		problem.InternalServerError(w, "failed to list customers")
+		serverErr(w, r, "ListCustomers", err)
 		return
 	}
 
@@ -143,7 +143,7 @@ func (h *CustomerHandler) UpdateKYCTier(w http.ResponseWriter, r *http.Request) 
 			problem.UnprocessableEntity(w, "invalid-kyc-tier", ve.Detail)
 			return
 		}
-		problem.InternalServerError(w, "failed to update KYC tier")
+		serverErr(w, r, "UpdateKYCTier", err)
 		return
 	}
 	if customer == nil {

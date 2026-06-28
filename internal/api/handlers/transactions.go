@@ -31,6 +31,8 @@ func NewTransactionHandler(
 
 type txnResponse struct {
 	ID         string  `json:"id"`
+	NUBAN      string  `json:"nuban,omitempty"`
+	SessionID  *string `json:"session_id,omitempty"`
 	AmountKobo int64   `json:"amount_kobo"`
 	AmountNGN  string  `json:"amount_ngn"`
 	Direction  string  `json:"direction"`
@@ -79,7 +81,7 @@ func (h *TransactionHandler) ListTransactions(w http.ResponseWriter, r *http.Req
 	// Validate customer belongs to tenant.
 	customer, err := h.customers.GetCustomer(r.Context(), tenant.ID, customerID)
 	if err != nil {
-		problem.InternalServerError(w, "failed to look up customer")
+		serverErr(w, r, "ListTransactions", err)
 		return
 	}
 	if customer == nil {
@@ -90,7 +92,7 @@ func (h *TransactionHandler) ListTransactions(w http.ResponseWriter, r *http.Req
 	// Get any VA for this customer (active or closed) for the VA ID.
 	va, err := h.accounts.GetActiveVA(r.Context(), customerID)
 	if err != nil {
-		problem.InternalServerError(w, "failed to look up virtual account")
+		serverErr(w, r, "ListTransactions", err)
 		return
 	}
 	if va == nil {
@@ -104,7 +106,7 @@ func (h *TransactionHandler) ListTransactions(w http.ResponseWriter, r *http.Req
 
 	txns, nextCursor, err := h.txns.ListTransactions(r.Context(), va.ID, limit, cursor)
 	if err != nil {
-		problem.InternalServerError(w, "failed to list transactions")
+		serverErr(w, r, "ListTransactions", err)
 		return
 	}
 
@@ -125,7 +127,7 @@ func (h *TransactionHandler) GetStatement(w http.ResponseWriter, r *http.Request
 
 	customer, err := h.customers.GetCustomer(r.Context(), tenant.ID, customerID)
 	if err != nil {
-		problem.InternalServerError(w, "failed to look up customer")
+		serverErr(w, r, "ListTransactions", err)
 		return
 	}
 	if customer == nil {
@@ -142,7 +144,7 @@ func (h *TransactionHandler) GetStatement(w http.ResponseWriter, r *http.Request
 	walletAccount := domain.CustomerWalletAccount(customerID)
 	stmt, err := h.txns.GetStatement(r.Context(), walletAccount, from, to)
 	if err != nil {
-		problem.InternalServerError(w, "failed to generate statement")
+		serverErr(w, r, "GetStatement", err)
 		return
 	}
 
@@ -177,6 +179,8 @@ func (h *TransactionHandler) GetStatement(w http.ResponseWriter, r *http.Request
 func toTxnResponse(tx *domain.Transaction) txnResponse {
 	return txnResponse{
 		ID:         tx.ID,
+		NUBAN:      tx.NUBAN,
+		SessionID:  tx.SessionID,
 		AmountKobo: tx.AmountKobo,
 		AmountNGN:  koboToNGN(tx.AmountKobo),
 		Direction:  tx.Direction,
@@ -187,6 +191,80 @@ func toTxnResponse(tx *domain.Transaction) txnResponse {
 		Narration:  tx.Narration,
 		OccurredAt: tx.OccurredAt.Format(time.RFC3339),
 	}
+}
+
+// GetBalance handles GET /v1/customers/{customerID}/balance.
+func (h *TransactionHandler) GetBalance(w http.ResponseWriter, r *http.Request) {
+	customerID := chi.URLParam(r, "customerID")
+	tenant := middleware.TenantFromContext(r.Context())
+
+	customer, err := h.customers.GetCustomer(r.Context(), tenant.ID, customerID)
+	if err != nil {
+		serverErr(w, r, "GetBalance", err)
+		return
+	}
+	if customer == nil {
+		problem.NotFound(w, "customer not found")
+		return
+	}
+
+	balance, err := h.txns.GetBalance(r.Context(), domain.CustomerWalletAccount(customerID))
+	if err != nil {
+		serverErr(w, r, "GetBalance", err)
+		return
+	}
+
+	kyc := 0
+	if customer.Identity != nil {
+		kyc = customer.Identity.KYCTier
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"customer_id":  customerID,
+		"balance_kobo": balance,
+		"balance_ngn":  koboToNGN(balance),
+		"kyc_tier":     kyc,
+		"computed_at":  time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// GetSingleTransaction handles GET /v1/transactions/{transactionID}.
+func (h *TransactionHandler) GetSingleTransaction(w http.ResponseWriter, r *http.Request) {
+	txID := chi.URLParam(r, "transactionID")
+	tenant := middleware.TenantFromContext(r.Context())
+
+	tx, err := h.txns.GetTransactionForTenant(r.Context(), tenant.ID, txID)
+	if err != nil {
+		serverErr(w, r, "GetSingleTransaction", err)
+		return
+	}
+	if tx == nil {
+		problem.NotFound(w, "transaction not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, toTxnResponse(tx))
+}
+
+// ListTenantTransactions handles GET /v1/transactions.
+func (h *TransactionHandler) ListTenantTransactions(w http.ResponseWriter, r *http.Request) {
+	tenant := middleware.TenantFromContext(r.Context())
+	cursor := r.URL.Query().Get("cursor")
+
+	txns, nextCursor, err := h.txns.ListTenantTransactions(r.Context(), tenant.ID, 50, cursor)
+	if err != nil {
+		serverErr(w, r, "ListTenantTransactions", err)
+		return
+	}
+
+	resp := listTxnsResponse{
+		Data:       make([]txnResponse, 0, len(txns)),
+		NextCursor: nextCursor,
+	}
+	for _, tx := range txns {
+		resp.Data = append(resp.Data, toTxnResponse(tx))
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func koboToNGN(kobo int64) string {

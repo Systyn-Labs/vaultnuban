@@ -9,6 +9,7 @@ import (
 	"github.com/systynlabs/vaultnuban/internal/api/problem"
 	"github.com/systynlabs/vaultnuban/internal/domain"
 	"github.com/systynlabs/vaultnuban/internal/service"
+	"github.com/systynlabs/vaultnuban/internal/store"
 )
 
 // ── Request / response types ──────────────────────────────────────────────────
@@ -31,17 +32,49 @@ type renameVARequest struct {
 
 type patchVARequest struct {
 	AccountName *string `json:"account_name,omitempty"`
-	Action      string  `json:"action,omitempty"` // "suspend" | "unsuspend"
+	Status      string  `json:"status,omitempty"` // "SUSPENDED" | "ACTIVE"
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 type VAHandler struct {
-	svc *service.ProvisioningService
+	svc   *service.ProvisioningService
+	vaDB  store.VirtualAccountStore
 }
 
-func NewVAHandler(svc *service.ProvisioningService) *VAHandler {
-	return &VAHandler{svc: svc}
+func NewVAHandler(svc *service.ProvisioningService, vaDB store.VirtualAccountStore) *VAHandler {
+	return &VAHandler{svc: svc, vaDB: vaDB}
+}
+
+// ListVAs handles GET /v1/virtual-accounts.
+func (h *VAHandler) ListVAs(w http.ResponseWriter, r *http.Request) {
+	tenant := middleware.TenantFromContext(r.Context())
+	cursor := r.URL.Query().Get("cursor")
+
+	vas, nextCursor, err := h.vaDB.ListVAs(r.Context(), tenant.ID, 50, cursor)
+	if err != nil {
+		serverErr(w, r, "ListVAs", err)
+		return
+	}
+
+	type enrichedVAResponse struct {
+		vaResponse
+		CustomerDisplayName string `json:"customer_display_name,omitempty"`
+	}
+
+	data := make([]enrichedVAResponse, 0, len(vas))
+	for _, va := range vas {
+		data = append(data, enrichedVAResponse{
+			vaResponse:          toVAResponse(va),
+			CustomerDisplayName: va.CustomerDisplayName,
+		})
+	}
+
+	resp := map[string]any{"data": data}
+	if nextCursor != "" {
+		resp["next_cursor"] = nextCursor
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // ProvisionVA handles POST /v1/customers/{customerID}/virtual-account.
@@ -52,7 +85,7 @@ func (h *VAHandler) ProvisionVA(w http.ResponseWriter, r *http.Request) {
 
 	va, created, err := h.svc.ProvisionVA(r.Context(), tenant.ID, customerID, actor)
 	if err != nil {
-		problem.InternalServerError(w, "failed to provision virtual account")
+		serverErr(w, r, "ProvisionVA", err)
 		return
 	}
 	if va == nil {
@@ -74,7 +107,7 @@ func (h *VAHandler) GetVA(w http.ResponseWriter, r *http.Request) {
 
 	va, err := h.svc.GetVA(r.Context(), tenant.ID, customerID)
 	if err != nil {
-		problem.InternalServerError(w, "failed to retrieve virtual account")
+		serverErr(w, r, "GetVA", err)
 		return
 	}
 	if va == nil {
@@ -86,7 +119,7 @@ func (h *VAHandler) GetVA(w http.ResponseWriter, r *http.Request) {
 }
 
 // PatchVA handles PATCH /v1/customers/{customerID}/virtual-account.
-// Supports rename (account_name) and suspend/unsuspend (action).
+// Supports rename (account_name) and status change (status: SUSPENDED|ACTIVE).
 func (h *VAHandler) PatchVA(w http.ResponseWriter, r *http.Request) {
 	customerID := chi.URLParam(r, "customerID")
 	tenant := middleware.TenantFromContext(r.Context())
@@ -101,7 +134,7 @@ func (h *VAHandler) PatchVA(w http.ResponseWriter, r *http.Request) {
 	if req.AccountName != nil {
 		va, err := h.svc.RenameVA(r.Context(), tenant.ID, customerID, *req.AccountName, actor)
 		if err != nil {
-			problem.InternalServerError(w, "failed to rename virtual account")
+			serverErr(w, r, "RenameVA", err)
 			return
 		}
 		if va == nil {
@@ -112,23 +145,23 @@ func (h *VAHandler) PatchVA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch req.Action {
-	case "suspend":
+	switch req.Status {
+	case "SUSPENDED":
 		err := h.svc.SuspendVA(r.Context(), tenant.ID, customerID, actor)
 		if err != nil {
-			handleLifecycleError(w, err)
+			handleLifecycleError(w, r, err)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
-	case "unsuspend":
+	case "ACTIVE":
 		err := h.svc.UnsuspendVA(r.Context(), tenant.ID, customerID, actor)
 		if err != nil {
-			handleLifecycleError(w, err)
+			handleLifecycleError(w, r, err)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
-		problem.BadRequest(w, "body must contain account_name or action (suspend|unsuspend)")
+		problem.BadRequest(w, `body must contain account_name or status ("SUSPENDED"|"ACTIVE")`)
 	}
 }
 
@@ -140,7 +173,7 @@ func (h *VAHandler) DeleteVA(w http.ResponseWriter, r *http.Request) {
 
 	err := h.svc.CloseVA(r.Context(), tenant.ID, customerID, actor)
 	if err != nil {
-		handleLifecycleError(w, err)
+		handleLifecycleError(w, r, err)
 		return
 	}
 
@@ -163,11 +196,11 @@ func toVAResponse(va *domain.VirtualAccount) vaResponse {
 	}
 }
 
-func handleLifecycleError(w http.ResponseWriter, err error) {
+func handleLifecycleError(w http.ResponseWriter, r *http.Request, err error) {
 	var se *service.StateError
 	if errors.As(err, &se) {
 		problem.Conflict(w, se.Error())
 		return
 	}
-	problem.InternalServerError(w, err.Error())
+	serverErr(w, r, "LifecycleOp", err)
 }

@@ -30,6 +30,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	if logDir := os.Getenv("LOG_DIR"); logDir != "" {
+		if err := logger.EnableFileLogging(logDir, 7); err != nil {
+			logger.Warnf("Bootstrap", "file logging unavailable: %v", err)
+		} else {
+			logger.Logf("Bootstrap", "file logging enabled — dir=%s retain=7days", logDir)
+		}
+	}
+
 	logger.Logf("Bootstrap", "starting — env=%s port=%s base_url=%s",
 		cfg.Env, cfg.Port, cfg.NombaBaseURL)
 
@@ -58,6 +66,7 @@ func main() {
 
 	// ── Repos ─────────────────────────────────────────────────────────────────
 	tenantRepo := postgres.NewTenantRepo(pool)
+	healthRepo := postgres.NewHealthRepo(pool)
 	authRepo := postgres.NewAuthRepo(pool)
 	customerRepo := postgres.NewCustomerRepo(pool)
 	vaRepo := postgres.NewVARepo(pool)
@@ -101,6 +110,9 @@ func main() {
 
 	// ── Services ──────────────────────────────────────────────────────────────
 	customerSvc := service.NewCustomerService(customerRepo, auditRepo)
+
+	// ── Seed demo accounts (idempotent — no-op on subsequent startups) ────────
+	seedDemoData(ctx, authRepo, tenantRepo, customerSvc)
 	provisioningSvc := service.NewProvisioningService(customerRepo, vaRepo, auditRepo, prov)
 	suspenseSvc := service.NewSuspenseService(suspenseRepo, txnRepo, customerRepo, vaRepo, auditRepo)
 
@@ -121,7 +133,10 @@ func main() {
 
 	// ── HTTP server ───────────────────────────────────────────────────────────
 	deps := api.Dependencies{
+		Dispatcher: dispatcher,
 		TenantStore:   tenantRepo,
+		HealthStore:   healthRepo,
+		AuditStore:    auditRepo,
 		AuthStore:     authRepo,
 		WebhookStore:  webhookRepo,
 		CustomerStore: customerRepo,

@@ -196,6 +196,18 @@ func (s *AuthStore) CreateCredential(_ context.Context, cred *domain.UserCredent
 	return nil
 }
 
+func (s *AuthStore) SeedCredential(_ context.Context, cred *domain.UserCredential) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.creds[cred.Email]; exists {
+		return nil
+	}
+	c := *cred
+	c.ID = nextID("cred")
+	s.creds[cred.Email] = &c
+	return nil
+}
+
 func (s *AuthStore) GetCredentialByEmail(_ context.Context, email string) (*domain.UserCredential, *domain.Tenant, *domain.APIKey, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -675,6 +687,10 @@ func (s *AuditStore) Append(_ context.Context, entry *domain.AuditEntry) error {
 	return nil
 }
 
+func (s *AuditStore) ListAuditEntries(_ context.Context, _ string, _ int, _ string) ([]*domain.AuditEntry, string, error) {
+	return nil, "", nil
+}
+
 // ── RelayStore ────────────────────────────────────────────────────────────────
 
 type RelayStore struct {
@@ -812,4 +828,72 @@ func (s *SettingsStore) SeedSetting(_ context.Context, key string, value []byte)
 	copy(cp, value)
 	s.data[key] = cp
 	return nil
+}
+
+// ── HealthStore ───────────────────────────────────────────────────────────────
+
+type HealthStore struct{}
+
+func NewHealthStore() *HealthStore { return &HealthStore{} }
+
+func (s *HealthStore) GetPlatformHealth(_ context.Context) (*domain.PlatformHealth, error) {
+	return &domain.PlatformHealth{}, nil
+}
+
+func (s *HealthStore) ListCrossTenantSuspense(_ context.Context, _ int, _ string) ([]*domain.CrossTenantSuspenseItem, string, error) {
+	return nil, "", nil
+}
+
+// ── New list stubs required by updated store interfaces ───────────────────────
+
+func (s *TenantStore) ListTenants(_ context.Context) ([]*domain.Tenant, error) {
+	return nil, nil
+}
+
+func (s *TenantStore) ListAPIKeys(_ context.Context, _ string) ([]*domain.APIKey, error) {
+	return nil, nil
+}
+
+func (s *TenantStore) RevokeAPIKey(_ context.Context, _, _ string) error {
+	return nil
+}
+
+func (s *VirtualAccountStore) ListVAs(_ context.Context, _ string, _ int, _ string) ([]*domain.VirtualAccount, string, error) {
+	return nil, "", nil
+}
+
+func (s *TransactionStore) ListTenantTransactions(_ context.Context, _ string, _ int, _ string) ([]*domain.Transaction, string, error) {
+	return nil, "", nil
+}
+
+func (s *TransactionStore) GetTransactionForTenant(_ context.Context, _, _ string) (*domain.Transaction, error) {
+	return nil, nil
+}
+
+func (s *RelayStore) GetDelivery(_ context.Context, id string) (*domain.RelayDelivery, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, d := range s.deliveries {
+		if d.ID == id {
+			return d, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *RelayStore) ListDeliveries(_ context.Context, tenantID string, limit int, _ string) ([]*domain.RelayDelivery, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*domain.RelayDelivery
+	for _, d := range s.deliveries {
+		ep, ok := s.endpoints[d.EndpointID]
+		if !ok || ep.TenantID != tenantID {
+			continue
+		}
+		out = append(out, d)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, "", nil
 }

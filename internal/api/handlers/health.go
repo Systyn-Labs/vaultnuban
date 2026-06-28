@@ -1,0 +1,155 @@
+package handlers
+
+import (
+	"encoding/json"
+	"net/http"
+
+	"github.com/systynlabs/vaultnuban/internal/store"
+)
+
+type HealthHandler struct {
+	healthStore store.PlatformHealthStore
+}
+
+func NewHealthHandler(hs store.PlatformHealthStore) *HealthHandler {
+	return &HealthHandler{healthStore: hs}
+}
+
+func (h *HealthHandler) GetPlatformHealth(w http.ResponseWriter, r *http.Request) {
+	ph, err := h.healthStore.GetPlatformHealth(r.Context())
+	if err != nil {
+		serverErr(w, r, "GetPlatformHealth", err)
+		return
+	}
+
+	type ledgerResp struct {
+		DebitsKobo  int64 `json:"debits_kobo"`
+		CreditsKobo int64 `json:"credits_kobo"`
+		Balanced    bool  `json:"balanced"`
+	}
+	type sweepResp struct {
+		Posted    int    `json:"posted"`
+		Found     int    `json:"found"`
+		Suspensed int    `json:"suspensed"`
+		RanAt     string `json:"ran_at"`
+	}
+	type webhookResp struct {
+		Delivered int64 `json:"delivered"`
+		Total     int64 `json:"total"`
+	}
+	type suspenseResp struct {
+		AmountKobo  int64 `json:"amount_kobo"`
+		ItemCount   int64 `json:"item_count"`
+		TenantCount int64 `json:"tenant_count"`
+	}
+	type tenantHealthResp struct {
+		ID               string  `json:"id"`
+		Name             string  `json:"name"`
+		Customers        int64   `json:"customers"`
+		Accounts         int64   `json:"accounts"`
+		OpenSuspenseKobo int64   `json:"open_suspense_kobo"`
+		LastActivity     *string `json:"last_activity"`
+		Status           string  `json:"status"`
+	}
+	type resp struct {
+		Ledger              ledgerResp         `json:"ledger"`
+		LastSweep           *sweepResp         `json:"last_sweep"`
+		Webhook24h          webhookResp        `json:"webhook_24h"`
+		CrossTenantSuspense suspenseResp       `json:"cross_tenant_suspense"`
+		ActiveTenants       int                `json:"active_tenants"`
+		TotalTenants        int                `json:"total_tenants"`
+		TenantHealth        []tenantHealthResp `json:"tenant_health"`
+		CheckedAt           string             `json:"checked_at"`
+	}
+
+	out := resp{
+		Ledger: ledgerResp{
+			DebitsKobo:  ph.Ledger.DebitsKobo,
+			CreditsKobo: ph.Ledger.CreditsKobo,
+			Balanced:    ph.Ledger.Balanced,
+		},
+		Webhook24h: webhookResp{
+			Delivered: ph.Webhook24h.Delivered,
+			Total:     ph.Webhook24h.Total,
+		},
+		CrossTenantSuspense: suspenseResp{
+			AmountKobo:  ph.CrossTenantSuspense.AmountKobo,
+			ItemCount:   ph.CrossTenantSuspense.ItemCount,
+			TenantCount: ph.CrossTenantSuspense.TenantCount,
+		},
+		ActiveTenants: ph.ActiveTenants,
+		TotalTenants:  ph.TotalTenants,
+		CheckedAt:     ph.CheckedAt.UTC().Format("2006-01-02T15:04:05Z"),
+	}
+
+	if ph.LastSweep != nil {
+		s := ph.LastSweep
+		out.LastSweep = &sweepResp{
+			Posted:    s.Posted,
+			Found:     s.Found,
+			Suspensed: s.Suspensed,
+			RanAt:     s.RanAt.UTC().Format("2006-01-02T15:04:05Z"),
+		}
+	}
+
+	for _, th := range ph.TenantHealth {
+		t := tenantHealthResp{
+			ID:               th.ID,
+			Name:             th.Name,
+			Customers:        th.Customers,
+			Accounts:         th.Accounts,
+			OpenSuspenseKobo: th.OpenSuspenseKobo,
+			Status:           th.Status,
+		}
+		if th.LastActivity != nil {
+			s := th.LastActivity.UTC().Format("2006-01-02T15:04:05Z")
+			t.LastActivity = &s
+		}
+		out.TenantHealth = append(out.TenantHealth, t)
+	}
+
+	// Ensure tenant_health is never null in JSON
+	if out.TenantHealth == nil {
+		out.TenantHealth = []tenantHealthResp{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (h *HealthHandler) ListCrossTenantSuspense(w http.ResponseWriter, r *http.Request) {
+	cursor := r.URL.Query().Get("cursor")
+	items, next, err := h.healthStore.ListCrossTenantSuspense(r.Context(), 100, cursor)
+	if err != nil {
+		serverErr(w, r, "ListCrossTenantSuspense", err)
+		return
+	}
+
+	type itemResp struct {
+		ID         string `json:"id"`
+		TenantName string `json:"tenant_name"`
+		AmountKobo int64  `json:"amount_kobo"`
+		Reason     string `json:"reason"`
+		NUBAN      string `json:"nuban"`
+		CreatedAt  string `json:"created_at"`
+	}
+	type resp struct {
+		Data       []itemResp `json:"data"`
+		NextCursor string     `json:"next_cursor,omitempty"`
+	}
+	out := resp{Data: []itemResp{}}
+	for _, s := range items {
+		out.Data = append(out.Data, itemResp{
+			ID:         s.ID,
+			TenantName: s.TenantName,
+			AmountKobo: s.AmountKobo,
+			Reason:     string(s.Reason),
+			NUBAN:      s.NUBAN,
+			CreatedAt:  s.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		})
+	}
+	out.NextCursor = next
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+

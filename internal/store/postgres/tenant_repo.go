@@ -65,3 +65,53 @@ func (r *TenantRepo) GetTenantByAPIKey(ctx context.Context, keyHash string) (*do
 	}
 	return &t, &k, nil
 }
+
+func (r *TenantRepo) ListAPIKeys(ctx context.Context, tenantID string) ([]*domain.APIKey, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, tenant_id, key_prefix, active, created_at
+		FROM api_keys
+		WHERE tenant_id = $1 AND active = TRUE
+		ORDER BY created_at DESC`, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("tenant repo: list api keys: %w", err)
+	}
+	defer rows.Close()
+	var out []*domain.APIKey
+	for rows.Next() {
+		var k domain.APIKey
+		if err := rows.Scan(&k.ID, &k.TenantID, &k.KeyPrefix, &k.Active, &k.CreatedAt); err != nil {
+			return nil, fmt.Errorf("tenant repo: list api keys scan: %w", err)
+		}
+		out = append(out, &k)
+	}
+	return out, nil
+}
+
+func (r *TenantRepo) RevokeAPIKey(ctx context.Context, keyID, tenantID string) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE api_keys SET active = FALSE WHERE id = $1 AND tenant_id = $2`, keyID, tenantID)
+	if err != nil {
+		return fmt.Errorf("tenant repo: revoke api key: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("tenant repo: api key not found or not owned by tenant")
+	}
+	return nil
+}
+
+func (r *TenantRepo) ListTenants(ctx context.Context) ([]*domain.Tenant, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id, name, created_at FROM tenants ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("tenant repo: list: %w", err)
+	}
+	defer rows.Close()
+	var tenants []*domain.Tenant
+	for rows.Next() {
+		var t domain.Tenant
+		if err := rows.Scan(&t.ID, &t.Name, &t.CreatedAt); err != nil {
+			return nil, fmt.Errorf("tenant repo: list scan: %w", err)
+		}
+		tenants = append(tenants, &t)
+	}
+	return tenants, nil
+}

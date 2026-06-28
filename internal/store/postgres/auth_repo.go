@@ -26,6 +26,19 @@ func (r *AuthRepo) CreateCredential(ctx context.Context, cred *domain.UserCreden
 	return nil
 }
 
+func (r *AuthRepo) SeedCredential(ctx context.Context, cred *domain.UserCredential) error {
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO user_credentials(tenant_id, email, password_hash, name, role)
+		 VALUES($1,$2,$3,$4,$5)
+		 ON CONFLICT (email) DO NOTHING`,
+		cred.TenantID, cred.Email, cred.PasswordHash, cred.Name, cred.Role,
+	)
+	if err != nil {
+		return fmt.Errorf("auth repo: seed credential: %w", err)
+	}
+	return nil
+}
+
 // GetCredentialByEmail returns the credential, its tenant (nil for admin), and the
 // tenant's active API key (nil for admin). Returns nil credential (no error) when not found.
 func (r *AuthRepo) GetCredentialByEmail(ctx context.Context, email string) (*domain.UserCredential, *domain.Tenant, *domain.APIKey, error) {

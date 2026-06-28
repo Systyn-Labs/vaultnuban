@@ -14,6 +14,7 @@ import (
 	"github.com/systynlabs/vaultnuban/internal/config"
 	"github.com/systynlabs/vaultnuban/internal/provider"
 	"github.com/systynlabs/vaultnuban/internal/recon"
+	"github.com/systynlabs/vaultnuban/internal/relay"
 	"github.com/systynlabs/vaultnuban/internal/service"
 	"github.com/systynlabs/vaultnuban/internal/store"
 )
@@ -21,6 +22,8 @@ import (
 // Dependencies groups every external dependency the API needs.
 type Dependencies struct {
 	TenantStore   store.TenantStore
+	HealthStore   store.PlatformHealthStore
+	AuditStore    store.AuditStore
 	AuthStore     store.AuthStore
 	WebhookStore  store.WebhookEventStore
 	CustomerStore store.CustomerStore
@@ -36,6 +39,7 @@ type Dependencies struct {
 	Provider      provider.Provider
 	Worker        *recon.Worker
 	Sweep         *recon.SweepRunner
+	Dispatcher    *relay.Dispatcher
 	SweepToken    string
 }
 
@@ -61,18 +65,21 @@ func NewRouter(deps Dependencies) http.Handler {
 	r.Get("/healthz", handleHealthz)
 
 	// Human auth endpoints — no tenant auth
-	authH := handlers.NewAuthHandler(deps.AuthStore, deps.TenantStore)
+	authH := handlers.NewAuthHandler(deps.AuthStore, deps.TenantStore, deps.SweepToken)
 	r.Post("/auth/login", authH.Login)
 
 	// Initialise handlers
 	customerH := handlers.NewCustomerHandler(deps.CustomerSvc, deps.CustomerStore)
-	vaH := handlers.NewVAHandler(deps.Provisioning)
+	vaH := handlers.NewVAHandler(deps.Provisioning, deps.VAStore)
 	webhookH := handlers.NewWebhookHandler(deps.Provider, deps.WebhookStore, deps.Worker)
 	sweepH := handlers.NewSweepHandler(deps.Sweep, deps.SweepToken)
 	txnH := handlers.NewTransactionHandler(deps.TxnStore, deps.VAStore, deps.CustomerStore)
 	suspenseH := handlers.NewSuspenseHandler(deps.SuspenseSvc)
-	relayH := handlers.NewRelayHandler(deps.RelayStore)
+	relayH := handlers.NewRelayHandler(deps.RelayStore, deps.Dispatcher)
 	settingsH := handlers.NewSettingsHandler(deps.SettingsStore, deps.TierLimits)
+	healthH := handlers.NewHealthHandler(deps.HealthStore)
+	auditH := handlers.NewAuditHandler(deps.AuditStore)
+	apiKeyH := handlers.NewAPIKeyHandler(deps.TenantStore)
 
 	// Authenticated tenant API
 	r.Group(func(r chi.Router) {
@@ -83,6 +90,10 @@ func NewRouter(deps Dependencies) http.Handler {
 			// Customer management
 			r.Get("/customers", customerH.ListCustomers)
 			r.Post("/customers", customerH.CreateCustomer)
+
+			// Tenant-level flat lists (for dashboard)
+			r.Get("/virtual-accounts", vaH.ListVAs)
+			r.Get("/transactions", txnH.ListTenantTransactions)
 
 			r.Route("/customers/{customerID}", func(r chi.Router) {
 				// Identity / KYC
@@ -97,14 +108,28 @@ func NewRouter(deps Dependencies) http.Handler {
 				// Transactions (Phase 6)
 				r.Get("/transactions", txnH.ListTransactions)
 				r.Get("/statement", txnH.GetStatement)
+				r.Get("/balance", txnH.GetBalance)
 			})
 
 			// Suspense (Phase 6)
 			r.Get("/suspense", suspenseH.ListSuspense)
-			r.Post("/suspense/{itemID}/resolve", suspenseH.ResolveSuspense)
+			r.Patch("/suspense/{itemID}", suspenseH.ResolveSuspense)
 
-			// Webhook relay registration (FR-11)
+			// Single transaction lookup
+			r.Get("/transactions/{transactionID}", txnH.GetSingleTransaction)
+
+			// Webhook relay (FR-11)
 			r.Post("/webhook-endpoints", relayH.CreateEndpoint)
+			r.Get("/webhook-deliveries", relayH.ListDeliveries)
+			r.Post("/webhook-deliveries/{deliveryID}/replays", relayH.ReplayDelivery)
+
+			// Audit log
+			r.Get("/audit", auditH.ListAuditEntries)
+
+			// API key self-service
+			r.Get("/api-keys", apiKeyH.ListAPIKeys)
+			r.Post("/api-keys", apiKeyH.CreateAPIKey)
+			r.Delete("/api-keys/{keyID}", apiKeyH.RevokeAPIKey)
 		})
 	})
 
@@ -120,8 +145,11 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Use(middleware.SweepTokenAuth(deps.SweepToken))
 		r.Get("/internal/settings/tier-limits", settingsH.GetTierLimits)
 		r.Put("/internal/settings/tier-limits", settingsH.PutTierLimits)
-		r.Post("/internal/onboard", authH.Onboard)
-		r.Post("/internal/onboard-admin", authH.OnboardAdmin)
+		r.Post("/internal/tenants", authH.Onboard)
+		r.Post("/internal/admins", authH.OnboardAdmin)
+		r.Get("/internal/tenants", authH.ListTenants)
+		r.Get("/internal/health", healthH.GetPlatformHealth)
+		r.Get("/internal/suspense", healthH.ListCrossTenantSuspense)
 	})
 
 	return r

@@ -14,6 +14,9 @@ type TenantStore interface {
 	CreateTenant(ctx context.Context, name string) (*domain.Tenant, error)
 	GetTenantByAPIKey(ctx context.Context, keyHash string) (*domain.Tenant, *domain.APIKey, error)
 	CreateAPIKey(ctx context.Context, tenantID, rawKey, keyHash, keyPrefix string) (*domain.APIKey, error)
+	ListTenants(ctx context.Context) ([]*domain.Tenant, error)
+	ListAPIKeys(ctx context.Context, tenantID string) ([]*domain.APIKey, error)
+	RevokeAPIKey(ctx context.Context, keyID, tenantID string) error
 }
 
 // CustomerStore manages customers and their identity records.
@@ -34,6 +37,7 @@ type VirtualAccountStore interface {
 	GetVAByCustomerAndStatus(ctx context.Context, customerID, status string) (*domain.VirtualAccount, error)
 	UpdateVAStatus(ctx context.Context, vaID, status, actor string) error
 	RenameVA(ctx context.Context, vaID, newName, actor string) error
+	ListVAs(ctx context.Context, tenantID string, limit int, cursor string) ([]*domain.VirtualAccount, string, error)
 }
 
 // TransactionStore manages inbound transaction records and ledger entries.
@@ -42,7 +46,10 @@ type TransactionStore interface {
 	// Returns created=false (no error) if the transactionId already exists (idempotent).
 	PostTransaction(ctx context.Context, tx *domain.Transaction, entries []domain.LedgerEntry) (created bool, err error)
 	GetTransaction(ctx context.Context, txID string) (*domain.Transaction, error)
+	// GetTransactionForTenant fetches a single transaction and validates it belongs to the tenant.
+	GetTransactionForTenant(ctx context.Context, tenantID, txID string) (*domain.Transaction, error)
 	ListTransactions(ctx context.Context, vaID string, limit int, cursor string) ([]*domain.Transaction, string, error)
+	ListTenantTransactions(ctx context.Context, tenantID string, limit int, cursor string) ([]*domain.Transaction, string, error)
 	GetBalance(ctx context.Context, customerWalletAccount string) (int64, error)
 	GetDailyCredits(ctx context.Context, customerWalletAccount string, date time.Time) (int64, error)
 	GetStatement(ctx context.Context, customerWalletAccount string, from, to time.Time) (*domain.Statement, error)
@@ -71,11 +78,14 @@ type SweepStore interface {
 // AuditStore appends immutable audit entries.
 type AuditStore interface {
 	Append(ctx context.Context, entry *domain.AuditEntry) error
+	ListAuditEntries(ctx context.Context, tenantID string, limit int, cursor string) ([]*domain.AuditEntry, string, error)
 }
 
 // AuthStore manages human user credentials for the dashboard login.
 type AuthStore interface {
 	CreateCredential(ctx context.Context, cred *domain.UserCredential) error
+	// SeedCredential inserts the credential only if the email does not already exist.
+	SeedCredential(ctx context.Context, cred *domain.UserCredential) error
 	// GetCredentialByEmail returns the credential, its tenant (nil for admin), and the tenant's active API key (nil for admin).
 	GetCredentialByEmail(ctx context.Context, email string) (*domain.UserCredential, *domain.Tenant, *domain.APIKey, error)
 }
@@ -90,6 +100,12 @@ type SettingsStore interface {
 	SeedSetting(ctx context.Context, key string, value []byte) error
 }
 
+// PlatformHealthStore aggregates platform-wide health metrics for the admin dashboard.
+type PlatformHealthStore interface {
+	GetPlatformHealth(ctx context.Context) (*domain.PlatformHealth, error)
+	ListCrossTenantSuspense(ctx context.Context, limit int, cursor string) ([]*domain.CrossTenantSuspenseItem, string, error)
+}
+
 // RelayStore manages tenant webhook relay endpoints and delivery records (FR-11).
 type RelayStore interface {
 	CreateEndpoint(ctx context.Context, ep *domain.RelayEndpoint) error
@@ -99,6 +115,9 @@ type RelayStore interface {
 
 	CreateDelivery(ctx context.Context, d *domain.RelayDelivery) error
 	UpdateDelivery(ctx context.Context, d *domain.RelayDelivery) error
+	GetDelivery(ctx context.Context, id string) (*domain.RelayDelivery, error)
+	// ListDeliveries returns all delivery attempts for a tenant, newest first.
+	ListDeliveries(ctx context.Context, tenantID string, limit int, cursor string) ([]*domain.RelayDelivery, string, error)
 	// ListPendingRetries returns failed deliveries whose next_retry_at is in the past.
 	ListPendingRetries(ctx context.Context, limit int) ([]*domain.RelayDelivery, error)
 }
