@@ -89,8 +89,8 @@ func (h *TransactionHandler) ListTransactions(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Get any VA for this customer (active or closed) for the VA ID.
-	va, err := h.accounts.GetActiveVA(r.Context(), customerID)
+	// Get the VA regardless of status — transactions are linked by VA ID, not status.
+	va, err := h.accounts.GetLatestVA(r.Context(), customerID)
 	if err != nil {
 		serverErr(w, r, "ListTransactions", err)
 		return

@@ -44,6 +44,22 @@ func (r *VARepo) GetActiveVA(ctx context.Context, customerID string) (*domain.Vi
 	return va, err
 }
 
+func (r *VARepo) GetLatestVA(ctx context.Context, customerID string) (*domain.VirtualAccount, error) {
+	va, err := r.scan(ctx, `
+		SELECT id, customer_id, nomba_account_ref, nuban, bank_name, account_name,
+		       COALESCE(nomba_holder_id,''), status, created_at, updated_at
+		FROM virtual_accounts
+		WHERE customer_id = $1
+		ORDER BY created_at DESC
+		LIMIT 1`,
+		customerID,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return va, err
+}
+
 func (r *VARepo) GetVAByNUBAN(ctx context.Context, nuban string) (*domain.VirtualAccount, error) {
 	va, err := r.scan(ctx, `
 		SELECT id, customer_id, nomba_account_ref, nuban, bank_name, account_name,

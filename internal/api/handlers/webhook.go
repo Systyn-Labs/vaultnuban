@@ -51,7 +51,7 @@ func (h *WebhookHandler) HandleNombaWebhook(w http.ResponseWriter, r *http.Reque
 
 	// FR-4.1: signature verification
 	if err := h.prov.VerifyWebhookSignature(r.Context(), headers, body); err != nil {
-		logger.Warnf(webhookCtx, "invalid signature: %v", err)
+		logger.Warnf(webhookCtx, "WEBHOOK REJECTED — signature invalid (check NOMBA_WEBHOOK_SECRET matches Nomba dashboard): %v", err)
 		problem.Unauthorized(w, "invalid webhook signature")
 		return
 	}

@@ -32,6 +32,9 @@ type CustomerStore interface {
 type VirtualAccountStore interface {
 	CreateVirtualAccount(ctx context.Context, va *domain.VirtualAccount) error
 	GetActiveVA(ctx context.Context, customerID string) (*domain.VirtualAccount, error)
+	// GetLatestVA returns the most recently created VA for a customer regardless of status.
+	// Use this when you need the VA ID for transaction lookups (status doesn't matter there).
+	GetLatestVA(ctx context.Context, customerID string) (*domain.VirtualAccount, error)
 	GetVAByNUBAN(ctx context.Context, nuban string) (*domain.VirtualAccount, error)
 	GetVAByAccountRef(ctx context.Context, accountRef string) (*domain.VirtualAccount, error)
 	GetVAByCustomerAndStatus(ctx context.Context, customerID, status string) (*domain.VirtualAccount, error)

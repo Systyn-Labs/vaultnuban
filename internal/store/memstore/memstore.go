@@ -259,6 +259,20 @@ func (s *VirtualAccountStore) GetActiveVA(_ context.Context, customerID string) 
 	return nil, nil
 }
 
+func (s *VirtualAccountStore) GetLatestVA(_ context.Context, customerID string) (*domain.VirtualAccount, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var latest *domain.VirtualAccount
+	for _, va := range s.accounts {
+		if va.CustomerID == customerID {
+			if latest == nil || va.CreatedAt.After(latest.CreatedAt) {
+				latest = va
+			}
+		}
+	}
+	return latest, nil
+}
+
 func (s *VirtualAccountStore) GetVAByNUBAN(_ context.Context, nuban string) (*domain.VirtualAccount, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
