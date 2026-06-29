@@ -204,6 +204,10 @@ type listTransactionsResponse struct {
 // nombaDateFormat is what the Nomba transaction list API expects — UTC with no timezone suffix.
 const nombaDateFormat = "2006-01-02T15:04:05"
 
+type filterTransactionRequest struct {
+	Type string `json:"type"`
+}
+
 func (a *Adapter) ListTransactions(ctx context.Context, req provider.ListTransactionsRequest) (*provider.TransactionPage, error) {
 	q := url.Values{}
 	q.Set("dateFrom", req.DateFrom.UTC().Format(nombaDateFormat))
@@ -215,11 +219,24 @@ func (a *Adapter) ListTransactions(ctx context.Context, req provider.ListTransac
 		q.Set("limit", fmt.Sprintf("%d", req.PageSize))
 	}
 
-	path := "/v1/transactions/accounts"
+	// When a sub-account is configured, use the POST filter endpoint with
+	// type=transfer so Nomba filters server-side. Without it, the sub-account
+	// returns all activity (POS, purchases, etc.) across hundreds of pages.
+	var (
+		method string
+		path   string
+		body   []byte
+	)
 	if a.subAccountID != "" {
+		method = http.MethodPost
 		path = "/v1/transactions/accounts/" + a.subAccountID
+		body, _ = json.Marshal(filterTransactionRequest{Type: "transfer"})
+	} else {
+		method = http.MethodGet
+		path = "/v1/transactions/accounts"
 	}
-	resp, err := a.client.authDo(ctx, http.MethodGet, path+"?"+q.Encode(), nil)
+
+	resp, err := a.client.authDo(ctx, method, path+"?"+q.Encode(), body)
 	if err != nil {
 		return nil, fmt.Errorf("nomba: list transactions: %w", err)
 	}
@@ -232,11 +249,6 @@ func (a *Adapter) ListTransactions(ctx context.Context, req provider.ListTransac
 
 	page := &provider.TransactionPage{NextCursor: out.Data.Cursor}
 	for _, t := range out.Data.Transactions {
-		// Only inbound bank/VA credits are relevant to the sweep.
-		// POS, purchase, withdrawal, and other sub-account activity are noise.
-		if t.Type != "transfer" && t.Type != "p2p" {
-			continue
-		}
 		pt, err := convertListTransaction(t)
 		if err != nil {
 			continue // skip malformed entries; sweep will retry on next window
