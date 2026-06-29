@@ -158,6 +158,18 @@ func (a *Adapter) ListVAs(ctx context.Context, cursor string) (*provider.VAPage,
 
 // ── Transaction listing ───────────────────────────────────────────────────────
 
+// nombaListTransaction is the shape returned by GET /v1/transactions/accounts.
+// The list API only returns basic fields; NUBAN/senderName/etc. come via webhook only.
+type nombaListTransaction struct {
+	TransactionID string  `json:"id"`
+	Amount        float64 `json:"amount"` // Nomba returns naira; we convert to kobo
+	Type          string  `json:"type"`
+	Status        string  `json:"status"`
+	CreatedAt     string  `json:"timeCreated"`
+}
+
+// nombaTransaction is the shape delivered inside webhook payloads and requery responses.
+// These carry the full set of fields needed for VA matching.
 type nombaTransaction struct {
 	TransactionID string  `json:"transactionId"`
 	SessionID     string  `json:"sessionId"`
@@ -175,15 +187,18 @@ type nombaTransaction struct {
 type listTransactionsResponse struct {
 	Code string `json:"code"`
 	Data struct {
-		Transactions []nombaTransaction `json:"transactions"`
-		Cursor       string             `json:"cursor"`
+		Transactions []nombaListTransaction `json:"results"` // Nomba uses "results" not "transactions"
+		Cursor       string                 `json:"cursor"`
 	} `json:"data"`
 }
 
+// nombaDateFormat is what the Nomba transaction list API expects — UTC with no timezone suffix.
+const nombaDateFormat = "2006-01-02T15:04:05"
+
 func (a *Adapter) ListTransactions(ctx context.Context, req provider.ListTransactionsRequest) (*provider.TransactionPage, error) {
 	q := url.Values{}
-	q.Set("dateFrom", req.DateFrom.UTC().Format(time.RFC3339))
-	q.Set("dateTo", req.DateTo.UTC().Format(time.RFC3339))
+	q.Set("dateFrom", req.DateFrom.UTC().Format(nombaDateFormat))
+	q.Set("dateTo", req.DateTo.UTC().Format(nombaDateFormat))
 	if req.Cursor != "" {
 		q.Set("cursor", req.Cursor)
 	}
@@ -204,7 +219,7 @@ func (a *Adapter) ListTransactions(ctx context.Context, req provider.ListTransac
 
 	page := &provider.TransactionPage{NextCursor: out.Data.Cursor}
 	for _, t := range out.Data.Transactions {
-		pt, err := convertTransaction(t)
+		pt, err := convertListTransaction(t)
 		if err != nil {
 			continue // skip malformed entries; sweep will retry on next window
 		}
@@ -292,6 +307,32 @@ func (a *Adapter) ParseWebhook(_ context.Context, body []byte) (*provider.Webhoo
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// convertListTransaction maps a nombaListTransaction (from the polling API) to a
+// ProviderTransaction. NUBAN/accountRef/senderName are absent from this API so
+// the matcher will fall back to suspense unless the webhook already posted it.
+func convertListTransaction(t nombaListTransaction) (provider.ProviderTransaction, error) {
+	var occurredAt time.Time
+	if t.CreatedAt != "" {
+		var err error
+		occurredAt, err = time.Parse(nombaDateFormat, t.CreatedAt)
+		if err != nil {
+			occurredAt, err = time.Parse(time.RFC3339, t.CreatedAt)
+			if err != nil {
+				return provider.ProviderTransaction{}, fmt.Errorf("nomba: parse time %q: %w", t.CreatedAt, err)
+			}
+		}
+	}
+	raw, _ := json.Marshal(t)
+	return provider.ProviderTransaction{
+		TransactionID: t.TransactionID,
+		AmountKobo:    int64(t.Amount * 100),
+		Type:          t.Type,
+		Status:        t.Status,
+		OccurredAt:    occurredAt,
+		Raw:           raw,
+	}, nil
+}
 
 func convertTransaction(t nombaTransaction) (provider.ProviderTransaction, error) {
 	var occurredAt time.Time
