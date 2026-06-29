@@ -121,6 +121,7 @@ func NewRouter(deps Dependencies) http.Handler {
 
 			// Webhook relay (FR-11)
 			r.Post("/webhook-endpoints", relayH.CreateEndpoint)
+			r.Get("/webhook-endpoints", relayH.ListEndpoints)
 			r.Get("/webhook-deliveries", relayH.ListDeliveries)
 			r.Post("/webhook-deliveries/{deliveryID}/replays", relayH.ReplayDelivery)
 

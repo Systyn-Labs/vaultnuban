@@ -71,6 +71,28 @@ func (h *RelayHandler) CreateEndpoint(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ListEndpoints handles GET /v1/webhook-endpoints.
+func (h *RelayHandler) ListEndpoints(w http.ResponseWriter, r *http.Request) {
+	tenant := middleware.TenantFromContext(r.Context())
+
+	endpoints, err := h.relayStore.ListEndpoints(r.Context(), tenant.ID)
+	if err != nil {
+		serverErr(w, r, "ListEndpoints", err)
+		return
+	}
+
+	data := make([]endpointResponse, 0, len(endpoints))
+	for _, ep := range endpoints {
+		data = append(data, endpointResponse{
+			ID:        ep.ID,
+			URL:       ep.URL,
+			Active:    ep.Active,
+			CreatedAt: ep.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": data})
+}
+
 // ListDeliveries handles GET /v1/webhook-deliveries.
 func (h *RelayHandler) ListDeliveries(w http.ResponseWriter, r *http.Request) {
 	tenant := middleware.TenantFromContext(r.Context())
