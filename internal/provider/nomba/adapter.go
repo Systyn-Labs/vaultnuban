@@ -215,7 +215,11 @@ func (a *Adapter) ListTransactions(ctx context.Context, req provider.ListTransac
 		q.Set("limit", fmt.Sprintf("%d", req.PageSize))
 	}
 
-	resp, err := a.client.authDo(ctx, http.MethodGet, "/v1/transactions/accounts?"+q.Encode(), nil)
+	path := "/v1/transactions/accounts"
+	if a.subAccountID != "" {
+		path = "/v1/transactions/accounts/" + a.subAccountID
+	}
+	resp, err := a.client.authDo(ctx, http.MethodGet, path+"?"+q.Encode(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("nomba: list transactions: %w", err)
 	}
@@ -264,34 +268,40 @@ func (a *Adapter) Requery(ctx context.Context, sessionID string) (*provider.Prov
 // ── Outbound transfers ────────────────────────────────────────────────────────
 
 type transferRequest struct {
-	Amount                       float64 `json:"amount"` // naira, not kobo
-	Narration                    string  `json:"narration"`
-	DestinationBankCode          string  `json:"destinationBankCode"`
-	DestinationBankAccountNumber string  `json:"destinationBankAccountNumber"`
-	Currency                     string  `json:"currency"`
+	Amount        float64 `json:"amount"` // naira, not kobo
+	AccountNumber string  `json:"accountNumber"`
+	AccountName   string  `json:"accountName"`
+	BankCode      string  `json:"bankCode"`
+	MerchantTxRef string  `json:"merchantTxRef"` // idempotency key
+	Narration     string  `json:"narration,omitempty"`
 }
 
 type transferResponse struct {
 	Code string `json:"code"`
 	Data struct {
-		TransactionID string  `json:"transactionId"`
-		SessionID     string  `json:"sessionId"`
-		Amount        float64 `json:"amount"`
-		Status        string  `json:"status"`
+		TransactionID string `json:"transactionId"`
+		SessionID     string `json:"sessionId"`
+		Amount        string `json:"amount"`
+		Status        string `json:"status"`
 	} `json:"data"`
 }
 
 func (a *Adapter) Transfer(ctx context.Context, req provider.TransferRequest) (*provider.TransferResponse, error) {
 	amountNaira := float64(req.AmountKobo) / 100.0
 	body, _ := json.Marshal(transferRequest{
-		Amount:                       amountNaira,
-		Narration:                    req.Narration,
-		DestinationBankCode:          req.DestinationBankCode,
-		DestinationBankAccountNumber: req.DestinationAccountNumber,
-		Currency:                     "NGN",
+		Amount:        amountNaira,
+		AccountNumber: req.DestinationAccountNumber,
+		AccountName:   req.DestinationAccountName,
+		BankCode:      req.DestinationBankCode,
+		MerchantTxRef: req.Reference,
+		Narration:     req.Narration,
 	})
 
-	resp, err := a.client.authDo(ctx, http.MethodPost, "/v1/transfers", body)
+	path := "/v2/transfers/bank"
+	if a.subAccountID != "" {
+		path = "/v2/transfers/bank/" + a.subAccountID
+	}
+	resp, err := a.client.authDo(ctx, http.MethodPost, path, body)
 	if err != nil {
 		return nil, fmt.Errorf("nomba: transfer: %w", err)
 	}
