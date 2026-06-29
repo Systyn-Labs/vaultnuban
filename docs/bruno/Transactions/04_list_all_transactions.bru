@@ -1,0 +1,15 @@
+meta {
+  name: List All Transactions (Tenant-wide)
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{base_url}}/v1/transactions
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{api_key}}
+}

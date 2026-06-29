@@ -4,8 +4,8 @@ meta {
   seq: 3
 }
 
-post {
-  url: {{base_url}}/v1/suspense/{{suspense_item_id}}/resolve
+patch {
+  url: {{base_url}}/v1/suspense/{{suspense_item_id}}
   body: json
   auth: bearer
 }

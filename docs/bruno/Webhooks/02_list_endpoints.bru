@@ -1,0 +1,15 @@
+meta {
+  name: List Webhook Endpoints
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{base_url}}/v1/webhook-endpoints
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{api_key}}
+}

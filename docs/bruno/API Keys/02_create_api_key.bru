@@ -1,0 +1,25 @@
+meta {
+  name: Create API Key
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{base_url}}/v1/api-keys
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{api_key}}
+}
+
+headers {
+  Idempotency-Key: create-key-{{$randomInt}}
+}
+
+script:post-response {
+  if (res.status === 201 || res.status === 200) {
+    bru.setVar("new_key_id", res.body.id);
+  }
+}

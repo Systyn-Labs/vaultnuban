@@ -1,0 +1,15 @@
+meta {
+  name: List API Keys
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{base_url}}/v1/api-keys
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{api_key}}
+}

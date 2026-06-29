@@ -1,0 +1,33 @@
+meta {
+  name: Register Webhook Endpoint
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{base_url}}/v1/webhook-endpoints
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{api_key}}
+}
+
+headers {
+  Idempotency-Key: register-webhook-{{$randomInt}}
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "url": "https://yourapp.com/webhooks/vaultnuban",
+    "secret": "your-signing-secret-min-16-chars"
+  }
+}
+
+script:post-response {
+  if (res.status === 201 || res.status === 200) {
+    bru.setVar("webhook_endpoint_id", res.body.id);
+  }
+}

@@ -1,0 +1,15 @@
+meta {
+  name: Platform Health
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{base_url}}/internal/health
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sweep_token}}
+}
