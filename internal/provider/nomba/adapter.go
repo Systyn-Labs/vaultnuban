@@ -20,12 +20,14 @@ import (
 // Adapter implements provider.Provider against the Nomba API.
 type Adapter struct {
 	client        *Client
+	subAccountID  string
 	webhookSecret string
 }
 
-func New(baseURL, clientID, clientSecret, accountID, webhookSecret string) *Adapter {
+func New(baseURL, clientID, clientSecret, accountID, subAccountID, webhookSecret string) *Adapter {
 	return &Adapter{
 		client:        NewClient(baseURL, clientID, clientSecret, accountID),
+		subAccountID:  subAccountID,
 		webhookSecret: webhookSecret,
 	}
 }
@@ -58,7 +60,11 @@ func (a *Adapter) CreateVA(ctx context.Context, req provider.CreateVARequest) (*
 		BVN:         req.BVN,
 	})
 
-	resp, err := a.client.authDo(ctx, http.MethodPost, "/v1/accounts/virtual", body)
+	path := "/v1/accounts/virtual"
+	if a.subAccountID != "" {
+		path = "/v1/accounts/virtual/" + a.subAccountID
+	}
+	resp, err := a.client.authDo(ctx, http.MethodPost, path, body)
 	if err != nil {
 		return nil, fmt.Errorf("nomba: create VA: %w", err)
 	}

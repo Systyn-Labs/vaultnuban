@@ -106,6 +106,7 @@ func main() {
 		cfg.NombaClientID,
 		cfg.NombaClientSecret,
 		cfg.NombaAccountID,
+		cfg.NombaSubAccountID,
 		cfg.NombaWebhookSecret,
 	)
 	logger.Logf("NombaProvider", "configured — base_url=%s", cfg.NombaBaseURL)

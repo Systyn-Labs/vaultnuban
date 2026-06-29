@@ -16,10 +16,11 @@ type TierLimit struct {
 // Config holds all runtime configuration sourced from environment variables.
 type Config struct {
 	// Nomba
-	NombaClientID     string
-	NombaClientSecret string
-	NombaAccountID    string
-	NombaBaseURL      string
+	NombaClientID      string
+	NombaClientSecret  string
+	NombaAccountID     string
+	NombaSubAccountID  string
+	NombaBaseURL       string
 	NombaWebhookSecret string
 
 	// Storage
@@ -45,6 +46,7 @@ func Load() (*Config, error) {
 		NombaClientID:      requireEnv("NOMBA_CLIENT_ID"),
 		NombaClientSecret:  requireEnv("NOMBA_CLIENT_SECRET"),
 		NombaAccountID:     requireEnv("NOMBA_ACCOUNT_ID"),
+		NombaSubAccountID:  requireEnv("NOMBA_SUB_ACCOUNT_ID"),
 		NombaBaseURL:       requireEnv("NOMBA_BASE_URL"),
 		NombaWebhookSecret: requireEnv("NOMBA_WEBHOOK_SECRET"),
 		DatabaseURL:        requireEnv("DATABASE_URL"),
