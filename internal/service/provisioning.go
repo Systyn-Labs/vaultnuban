@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -248,15 +250,22 @@ func (s *ProvisioningService) mustGetActiveVA(ctx context.Context, tenantID, cus
 	return va, nil
 }
 
-// buildAccountRef produces a deterministic, unique accountRef for Nomba (FR-3.1).
-// Format: t{8 hex from tenantID}c{32 hex from customerID} = 42 chars.
+// buildAccountRef produces a unique accountRef for Nomba.
+// A 4-byte random suffix ensures re-provisioning the same customer
+// never collides with a prior VA still held on Nomba's side.
+// Format: t{8 hex tenantID}c{20 hex customerID}{8 hex random} = 38 chars.
 func buildAccountRef(tenantID, customerID string) string {
 	t := strings.ReplaceAll(tenantID, "-", "")
 	c := strings.ReplaceAll(customerID, "-", "")
 	if len(t) > 8 {
 		t = t[:8]
 	}
-	return "t" + t + "c" + c
+	if len(c) > 20 {
+		c = c[:20]
+	}
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return "t" + t + "c" + c + hex.EncodeToString(b)
 }
 
 // buildAccountName derives the Nomba account name from the customer's identity.
