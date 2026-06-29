@@ -136,6 +136,16 @@ func (s *CustomerStore) GetCustomer(_ context.Context, tenantID, customerID stri
 	return c, nil
 }
 
+func (s *CustomerStore) GetCustomerByID(_ context.Context, customerID string) (*domain.Customer, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.customers[customerID]
+	if !ok {
+		return nil, nil
+	}
+	return c, nil
+}
+
 func (s *CustomerStore) GetCustomerByExternalRef(_ context.Context, tenantID, externalRef string) (*domain.Customer, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -568,6 +578,19 @@ func (s *WebhookEventStore) InsertWebhookEvent(_ context.Context, evt *domain.We
 	return true, nil
 }
 
+func (s *WebhookEventStore) ListWebhookEvents(_ context.Context, limit int) ([]*domain.WebhookEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*domain.WebhookEvent
+	for _, e := range s.byID {
+		out = append(out, e)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
 func (s *WebhookEventStore) MarkWebhookProcessed(_ context.Context, id, status string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -646,6 +669,21 @@ func (s *SuspenseStore) ResolveSuspenseItem(_ context.Context, itemID, resolutio
 }
 
 // OpenItems returns all open suspense items — used in test assertions.
+func (s *SuspenseStore) ListOpenUnmatchedItems(_ context.Context, limit int) ([]*domain.SuspenseItem, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*domain.SuspenseItem
+	for _, item := range s.items {
+		if item.Status == "open" && item.Reason == "unmatched" {
+			out = append(out, item)
+			if limit > 0 && len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
 func (s *SuspenseStore) OpenItems() []*domain.SuspenseItem {
 	s.mu.Lock()
 	defer s.mu.Unlock()
