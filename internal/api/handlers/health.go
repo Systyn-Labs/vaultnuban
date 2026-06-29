@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/systynlabs/vaultnuban/internal/provider"
 	"github.com/systynlabs/vaultnuban/internal/store"
 )
 
@@ -11,10 +12,11 @@ type HealthHandler struct {
 	healthStore store.PlatformHealthStore
 	sweepStore  store.SweepStore
 	vaStore     store.VirtualAccountStore
+	provider    provider.Provider
 }
 
-func NewHealthHandler(hs store.PlatformHealthStore, ss store.SweepStore, vs store.VirtualAccountStore) *HealthHandler {
-	return &HealthHandler{healthStore: hs, sweepStore: ss, vaStore: vs}
+func NewHealthHandler(hs store.PlatformHealthStore, ss store.SweepStore, vs store.VirtualAccountStore, prov provider.Provider) *HealthHandler {
+	return &HealthHandler{healthStore: hs, sweepStore: ss, vaStore: vs, provider: prov}
 }
 
 func (h *HealthHandler) GetPlatformHealth(w http.ResponseWriter, r *http.Request) {
@@ -200,6 +202,40 @@ func (h *HealthHandler) ListAllVAs(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	out.NextCursor = next
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *HealthHandler) ListNombaVAs(w http.ResponseWriter, r *http.Request) {
+	cursor := r.URL.Query().Get("cursor")
+	page, err := h.provider.ListVAs(r.Context(), cursor)
+	if err != nil {
+		serverErr(w, r, "ListNombaVAs", err)
+		return
+	}
+
+	type vaResp struct {
+		AccountRef  string `json:"account_ref"`
+		NUBAN       string `json:"nuban"`
+		BankName    string `json:"bank_name"`
+		AccountName string `json:"account_name"`
+		Status      string `json:"status"`
+		CreatedAt   string `json:"created_at"`
+	}
+	type resp struct {
+		Data       []vaResp `json:"data"`
+		NextCursor string   `json:"next_cursor,omitempty"`
+	}
+	out := resp{Data: make([]vaResp, 0, len(page.VAs)), NextCursor: page.NextCursor}
+	for _, va := range page.VAs {
+		out.Data = append(out.Data, vaResp{
+			AccountRef:  va.AccountRef,
+			NUBAN:       va.NUBAN,
+			BankName:    va.BankName,
+			AccountName: va.AccountName,
+			Status:      va.Status,
+			CreatedAt:   va.CreatedAt,
+		})
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 

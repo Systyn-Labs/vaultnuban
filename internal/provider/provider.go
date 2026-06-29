@@ -15,6 +15,7 @@ type Provider interface {
 	UpdateVA(ctx context.Context, identifier, newName string) error
 	CloseVA(ctx context.Context, identifier string) error
 	SuspendVA(ctx context.Context, accountID string) error
+	ListVAs(ctx context.Context, cursor string) (*VAPage, error)
 
 	// Transaction data
 	ListTransactions(ctx context.Context, req ListTransactionsRequest) (*TransactionPage, error)
@@ -26,6 +27,20 @@ type Provider interface {
 }
 
 // ── Request / response types ──────────────────────────────────────────────────
+
+type NombaVA struct {
+	AccountRef  string
+	NUBAN       string
+	BankName    string
+	AccountName string
+	Status      string
+	CreatedAt   string
+}
+
+type VAPage struct {
+	VAs        []NombaVA
+	NextCursor string
+}
 
 type CreateVARequest struct {
 	AccountRef  string // deterministic: t{tenantShort}c{customerULID}

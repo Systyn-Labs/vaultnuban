@@ -109,6 +109,53 @@ func (a *Adapter) SuspendVA(ctx context.Context, accountID string) error {
 	return nil
 }
 
+// ── Virtual account listing ───────────────────────────────────────────────────
+
+type listVAsResponse struct {
+	Code string `json:"code"`
+	Data struct {
+		Accounts []struct {
+			AccountRef      string `json:"accountRef"`
+			BankAccountNumber string `json:"bankAccountNumber"`
+			BankName        string `json:"bankName"`
+			BankAccountName string `json:"bankAccountName"`
+			Status          string `json:"status"`
+			CreatedAt       string `json:"createdAt"`
+		} `json:"accounts"`
+		Cursor string `json:"cursor"`
+	} `json:"data"`
+}
+
+func (a *Adapter) ListVAs(ctx context.Context, cursor string) (*provider.VAPage, error) {
+	path := "/v1/accounts/virtual?limit=100"
+	if cursor != "" {
+		path += "&cursor=" + url.QueryEscape(cursor)
+	}
+	resp, err := a.client.authDo(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("nomba: list VAs: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var out listVAsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("nomba: decode list VAs: %w", err)
+	}
+
+	page := &provider.VAPage{NextCursor: out.Data.Cursor}
+	for _, a := range out.Data.Accounts {
+		page.VAs = append(page.VAs, provider.NombaVA{
+			AccountRef:  a.AccountRef,
+			NUBAN:       a.BankAccountNumber,
+			BankName:    a.BankName,
+			AccountName: a.BankAccountName,
+			Status:      a.Status,
+			CreatedAt:   a.CreatedAt,
+		})
+	}
+	return page, nil
+}
+
 // ── Transaction listing ───────────────────────────────────────────────────────
 
 type nombaTransaction struct {

@@ -95,6 +95,22 @@ func (f *Fake) SuspendVA(_ context.Context, _ string) error {
 	return nil // fake accepts all suspensions
 }
 
+func (f *Fake) ListVAs(_ context.Context, _ string) (*provider.VAPage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	page := &provider.VAPage{}
+	for _, va := range f.accounts {
+		page.VAs = append(page.VAs, provider.NombaVA{
+			AccountRef:  va.AccountRef,
+			NUBAN:       va.NUBAN,
+			BankName:    va.BankName,
+			AccountName: va.AccountName,
+			Status:      "ACTIVE",
+		})
+	}
+	return page, nil
+}
+
 func (f *Fake) ListTransactions(_ context.Context, req provider.ListTransactionsRequest) (*provider.TransactionPage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
