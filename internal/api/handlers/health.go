@@ -9,10 +9,11 @@ import (
 
 type HealthHandler struct {
 	healthStore store.PlatformHealthStore
+	sweepStore  store.SweepStore
 }
 
-func NewHealthHandler(hs store.PlatformHealthStore) *HealthHandler {
-	return &HealthHandler{healthStore: hs}
+func NewHealthHandler(hs store.PlatformHealthStore, ss store.SweepStore) *HealthHandler {
+	return &HealthHandler{healthStore: hs, sweepStore: ss}
 }
 
 func (h *HealthHandler) GetPlatformHealth(w http.ResponseWriter, r *http.Request) {
@@ -113,6 +114,48 @@ func (h *HealthHandler) GetPlatformHealth(w http.ResponseWriter, r *http.Request
 		out.TenantHealth = []tenantHealthResp{}
 	}
 
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (h *HealthHandler) ListSweepRuns(w http.ResponseWriter, r *http.Request) {
+	limit := queryInt(r, "limit", 50)
+	runs, err := h.sweepStore.ListSweepRuns(r.Context(), limit)
+	if err != nil {
+		serverErr(w, r, "ListSweepRuns", err)
+		return
+	}
+
+	type runResp struct {
+		ID           string  `json:"id"`
+		WindowFrom   string  `json:"window_from"`
+		WindowTo     string  `json:"window_to"`
+		PagesFetched int     `json:"pages_fetched"`
+		Found        int     `json:"found"`
+		Posted       int     `json:"posted"`
+		Suspensed    int     `json:"suspensed"`
+		DurationMS   *int    `json:"duration_ms"`
+		Error        *string `json:"error,omitempty"`
+		RanAt        string  `json:"ran_at"`
+	}
+	type resp struct {
+		Data []runResp `json:"data"`
+	}
+	out := resp{Data: make([]runResp, 0, len(runs))}
+	for _, run := range runs {
+		out.Data = append(out.Data, runResp{
+			ID:           run.ID,
+			WindowFrom:   run.WindowFrom.UTC().Format("2006-01-02T15:04:05Z"),
+			WindowTo:     run.WindowTo.UTC().Format("2006-01-02T15:04:05Z"),
+			PagesFetched: run.PagesFetched,
+			Found:        run.Found,
+			Posted:       run.Posted,
+			Suspensed:    run.Suspensed,
+			DurationMS:   run.DurationMS,
+			Error:        run.Error,
+			RanAt:        run.RanAt.UTC().Format("2006-01-02T15:04:05Z"),
+		})
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }

@@ -143,6 +143,7 @@ func main() {
 		TxnStore:      txnRepo,
 		VAStore:       vaRepo,
 		RelayStore:    relayRepo,
+		SweepStore:    sweepRepo,
 		SettingsStore: settingsRepo,
 		TierLimits:    tierLimits,
 		Redis:         rdb,

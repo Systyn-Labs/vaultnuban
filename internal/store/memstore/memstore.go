@@ -671,6 +671,19 @@ func (s *SweepStore) GetLastSweepTime(_ context.Context) (time.Time, error) {
 	return s.runs[len(s.runs)-1].WindowTo, nil
 }
 
+func (s *SweepStore) ListSweepRuns(_ context.Context, limit int) ([]*domain.SweepRun, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit <= 0 {
+		limit = 50
+	}
+	out := make([]*domain.SweepRun, 0, len(s.runs))
+	for i := len(s.runs) - 1; i >= 0 && len(out) < limit; i-- {
+		out = append(out, s.runs[i])
+	}
+	return out, nil
+}
+
 // ── AuditStore ────────────────────────────────────────────────────────────────
 
 type AuditStore struct {

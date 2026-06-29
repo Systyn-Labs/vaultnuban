@@ -30,6 +30,7 @@ type Dependencies struct {
 	TxnStore      store.TransactionStore
 	VAStore       store.VirtualAccountStore
 	RelayStore    store.RelayStore
+	SweepStore    store.SweepStore
 	SettingsStore store.SettingsStore
 	TierLimits    *config.TierLimitsCache
 	Redis         *redis.Client
@@ -77,7 +78,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	suspenseH := handlers.NewSuspenseHandler(deps.SuspenseSvc)
 	relayH := handlers.NewRelayHandler(deps.RelayStore, deps.Dispatcher)
 	settingsH := handlers.NewSettingsHandler(deps.SettingsStore, deps.TierLimits)
-	healthH := handlers.NewHealthHandler(deps.HealthStore)
+	healthH := handlers.NewHealthHandler(deps.HealthStore, deps.SweepStore)
 	auditH := handlers.NewAuditHandler(deps.AuditStore)
 	apiKeyH := handlers.NewAPIKeyHandler(deps.TenantStore)
 
@@ -149,6 +150,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Post("/internal/admins", authH.OnboardAdmin)
 		r.Get("/internal/tenants", authH.ListTenants)
 		r.Get("/internal/health", healthH.GetPlatformHealth)
+		r.Get("/internal/sweep-runs", healthH.ListSweepRuns)
 		r.Get("/internal/suspense", healthH.ListCrossTenantSuspense)
 	})
 

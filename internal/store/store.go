@@ -73,6 +73,7 @@ type SuspenseStore interface {
 type SweepStore interface {
 	CreateSweepRun(ctx context.Context, run *domain.SweepRun) error
 	GetLastSweepTime(ctx context.Context) (time.Time, error)
+	ListSweepRuns(ctx context.Context, limit int) ([]*domain.SweepRun, error)
 }
 
 // AuditStore appends immutable audit entries.
