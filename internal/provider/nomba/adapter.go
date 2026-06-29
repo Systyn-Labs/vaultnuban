@@ -232,6 +232,11 @@ func (a *Adapter) ListTransactions(ctx context.Context, req provider.ListTransac
 
 	page := &provider.TransactionPage{NextCursor: out.Data.Cursor}
 	for _, t := range out.Data.Transactions {
+		// Only inbound bank/VA credits are relevant to the sweep.
+		// POS, purchase, withdrawal, and other sub-account activity are noise.
+		if t.Type != "transfer" && t.Type != "p2p" {
+			continue
+		}
 		pt, err := convertListTransaction(t)
 		if err != nil {
 			continue // skip malformed entries; sweep will retry on next window
