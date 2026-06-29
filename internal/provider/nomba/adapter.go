@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -161,27 +162,27 @@ func (a *Adapter) ListVAs(ctx context.Context, cursor string) (*provider.VAPage,
 // nombaListTransaction is the shape returned by GET /v1/transactions/accounts.
 // The list API only returns basic fields; NUBAN/senderName/etc. come via webhook only.
 type nombaListTransaction struct {
-	TransactionID string  `json:"id"`
-	Amount        float64 `json:"amount"` // Nomba returns naira; we convert to kobo
-	Type          string  `json:"type"`
-	Status        string  `json:"status"`
-	CreatedAt     string  `json:"timeCreated"`
+	TransactionID string `json:"id"`
+	Amount        string `json:"amount"` // Nomba returns naira as a string
+	Type          string `json:"type"`
+	Status        string `json:"status"`
+	CreatedAt     string `json:"timeCreated"`
 }
 
 // nombaTransaction is the shape delivered inside webhook payloads and requery responses.
 // These carry the full set of fields needed for VA matching.
 type nombaTransaction struct {
-	TransactionID string  `json:"transactionId"`
-	SessionID     string  `json:"sessionId"`
-	AccountNumber string  `json:"accountNumber"`
-	AccountRef    string  `json:"accountRef"`
-	Amount        float64 `json:"amount"` // Nomba returns naira; we convert to kobo
-	Type          string  `json:"type"`
-	Status        string  `json:"status"`
-	SenderName    string  `json:"senderName"`
-	SenderBank    string  `json:"senderBankName"`
-	Narration     string  `json:"narration"`
-	CreatedAt     string  `json:"createdAt"`
+	TransactionID string `json:"transactionId"`
+	SessionID     string `json:"sessionId"`
+	AccountNumber string `json:"accountNumber"`
+	AccountRef    string `json:"accountRef"`
+	Amount        string `json:"amount"` // Nomba returns naira as a string
+	Type          string `json:"type"`
+	Status        string `json:"status"`
+	SenderName    string `json:"senderName"`
+	SenderBank    string `json:"senderBankName"`
+	Narration     string `json:"narration"`
+	CreatedAt     string `json:"createdAt"`
 }
 
 type listTransactionsResponse struct {
@@ -323,10 +324,14 @@ func convertListTransaction(t nombaListTransaction) (provider.ProviderTransactio
 			}
 		}
 	}
+	amountKobo, err := parseNairaString(t.Amount)
+	if err != nil {
+		return provider.ProviderTransaction{}, fmt.Errorf("nomba: parse amount %q: %w", t.Amount, err)
+	}
 	raw, _ := json.Marshal(t)
 	return provider.ProviderTransaction{
 		TransactionID: t.TransactionID,
-		AmountKobo:    int64(t.Amount * 100),
+		AmountKobo:    amountKobo,
 		Type:          t.Type,
 		Status:        t.Status,
 		OccurredAt:    occurredAt,
@@ -348,13 +353,17 @@ func convertTransaction(t nombaTransaction) (provider.ProviderTransaction, error
 		}
 	}
 
+	amountKobo, err := parseNairaString(t.Amount)
+	if err != nil {
+		return provider.ProviderTransaction{}, fmt.Errorf("nomba: parse amount %q: %w", t.Amount, err)
+	}
 	raw, _ := json.Marshal(t)
 	return provider.ProviderTransaction{
 		TransactionID: t.TransactionID,
 		SessionID:     t.SessionID,
 		AccountNumber: t.AccountNumber,
 		AccountRef:    t.AccountRef,
-		AmountKobo:    int64(t.Amount * 100), // naira → kobo
+		AmountKobo:    amountKobo,
 		Type:          t.Type,
 		Status:        t.Status,
 		SenderName:    t.SenderName,
@@ -363,6 +372,19 @@ func convertTransaction(t nombaTransaction) (provider.ProviderTransaction, error
 		OccurredAt:    occurredAt,
 		Raw:           raw,
 	}, nil
+}
+
+// parseNairaString converts a naira amount string (e.g. "1500.00") to kobo (int64).
+// Handles both integer and decimal representations.
+func parseNairaString(s string) (int64, error) {
+	if s == "" {
+		return 0, nil
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, err
+	}
+	return int64(f * 100), nil
 }
 
 func normaliseEventType(raw string) string {
