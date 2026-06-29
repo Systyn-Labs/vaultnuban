@@ -9,6 +9,7 @@ import (
 	"github.com/systynlabs/vaultnuban/internal/config"
 	"github.com/systynlabs/vaultnuban/internal/domain"
 	"github.com/systynlabs/vaultnuban/internal/ledger"
+	"github.com/systynlabs/vaultnuban/internal/logger"
 	"github.com/systynlabs/vaultnuban/internal/provider"
 	"github.com/systynlabs/vaultnuban/internal/store"
 )
@@ -39,31 +40,38 @@ func NewMatcher(
 // Match resolves a ProviderTransaction to a MatchResult (FR-5.1).
 //
 // Matching order (FR-5.1):
-//  1. NUBAN (account number on the transfer)
-//  2. accountRef / accountHolderId
+//  1. accountRef — the reference we set when provisioning the VA (most reliable;
+//     present in both webhook and requery responses; identifies the receiving VA)
+//  2. NUBAN — fallback for requery responses that carry accountNumber as the NUBAN
 //  3. No match → suspense (unmatched)
+//
+// Note: in Nomba's webhook payload `accountNumber` is the SENDER's bank account
+// number, not the receiving NUBAN. accountRef is the authoritative VA identifier.
 func (m *Matcher) Match(ctx context.Context, pt provider.ProviderTransaction) (*MatchResult, error) {
 	var va *domain.VirtualAccount
 	var err error
 
-	// Step 1: match by NUBAN
-	if pt.AccountNumber != "" {
-		va, err = m.accounts.GetVAByNUBAN(ctx, pt.AccountNumber)
-		if err != nil {
-			return nil, fmt.Errorf("matcher: lookup by NUBAN: %w", err)
-		}
-	}
-
-	// Step 2: fallback to accountRef
-	if va == nil && pt.AccountRef != "" {
+	// Step 1: match by accountRef (primary — identifies the receiving VA)
+	if pt.AccountRef != "" {
 		va, err = m.accounts.GetVAByAccountRef(ctx, pt.AccountRef)
 		if err != nil {
 			return nil, fmt.Errorf("matcher: lookup by accountRef: %w", err)
 		}
 	}
 
+	// Step 2: fallback to NUBAN (for requery responses where accountNumber is the NUBAN)
+	if va == nil && pt.AccountNumber != "" {
+		va, err = m.accounts.GetVAByNUBAN(ctx, pt.AccountNumber)
+		if err != nil {
+			return nil, fmt.Errorf("matcher: lookup by NUBAN: %w", err)
+		}
+	}
+
 	// Step 3: unmatched → suspense
 	if va == nil {
+		logger.Warnf("Matcher",
+			"unmatched txn=%s accountRef=%q accountNumber=%q amountKobo=%d — routed to suspense",
+			pt.TransactionID, pt.AccountRef, pt.AccountNumber, pt.AmountKobo)
 		entries, err := ledger.CreditSuspense(pt.TransactionID, pt.AmountKobo)
 		if err != nil {
 			return nil, err
@@ -153,16 +161,16 @@ func (m *Matcher) MatchReversal(ctx context.Context, pt provider.ProviderTransac
 	var va *domain.VirtualAccount
 	var err error
 
-	if pt.AccountNumber != "" {
-		va, err = m.accounts.GetVAByNUBAN(ctx, pt.AccountNumber)
-		if err != nil {
-			return nil, fmt.Errorf("matcher: reversal lookup: %w", err)
-		}
-	}
-	if va == nil && pt.AccountRef != "" {
+	if pt.AccountRef != "" {
 		va, err = m.accounts.GetVAByAccountRef(ctx, pt.AccountRef)
 		if err != nil {
 			return nil, fmt.Errorf("matcher: reversal lookup by ref: %w", err)
+		}
+	}
+	if va == nil && pt.AccountNumber != "" {
+		va, err = m.accounts.GetVAByNUBAN(ctx, pt.AccountNumber)
+		if err != nil {
+			return nil, fmt.Errorf("matcher: reversal lookup by NUBAN: %w", err)
 		}
 	}
 

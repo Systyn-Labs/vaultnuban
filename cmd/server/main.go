@@ -74,6 +74,8 @@ func main() {
 	txnRepo := postgres.NewTransactionRepo(pool)
 	webhookRepo := postgres.NewWebhookRepo(pool)
 	suspenseRepo := postgres.NewSuspenseRepo(pool)
+	withdrawalRepo := postgres.NewWithdrawalRepo(pool)
+	collectionRepo := postgres.NewCollectionRepo(pool)
 	sweepRepo := postgres.NewSweepRepo(pool)
 	relayRepo := postgres.NewRelayRepo(pool)
 	settingsRepo := postgres.NewSettingsRepo(pool)
@@ -115,6 +117,8 @@ func main() {
 	seedDemoData(ctx, authRepo, tenantRepo, customerSvc)
 	provisioningSvc := service.NewProvisioningService(customerRepo, vaRepo, auditRepo, prov)
 	suspenseSvc := service.NewSuspenseService(suspenseRepo, txnRepo, customerRepo, vaRepo, auditRepo)
+	withdrawalSvc := service.NewWithdrawalService(withdrawalRepo, txnRepo, customerRepo, vaRepo, prov)
+	collectionSvc := service.NewCollectionService(collectionRepo, customerRepo, vaRepo)
 
 	// ── Reconciliation worker + sweep ─────────────────────────────────────────
 	matcher := recon.NewMatcher(vaRepo, txnRepo, tierLimits)
@@ -123,6 +127,7 @@ func main() {
 	// ── Relay dispatcher (FR-11) ───────────────────────────────────────────────
 	dispatcher := relay.NewDispatcher(relayRepo)
 	worker.SetDispatcher(dispatcher)
+	worker.SetCollectionService(collectionSvc)
 
 	sweepRunner := recon.NewSweepRunner(prov, txnRepo, sweepRepo, worker, cfg.SweepInterval, cfg.SweepOverlap)
 
@@ -142,6 +147,8 @@ func main() {
 		CustomerStore: customerRepo,
 		TxnStore:      txnRepo,
 		VAStore:       vaRepo,
+		SuspenseStore:   suspenseRepo,
+		WithdrawalStore: withdrawalRepo,
 		RelayStore:    relayRepo,
 		SweepStore:    sweepRepo,
 		SettingsStore: settingsRepo,
@@ -150,6 +157,9 @@ func main() {
 		CustomerSvc:   customerSvc,
 		Provisioning:  provisioningSvc,
 		SuspenseSvc:   suspenseSvc,
+		WithdrawalSvc:   withdrawalSvc,
+		CollectionSvc:   collectionSvc,
+		CollectionStore: collectionRepo,
 		Provider:      prov,
 		Worker:        worker,
 		Sweep:         sweepRunner,

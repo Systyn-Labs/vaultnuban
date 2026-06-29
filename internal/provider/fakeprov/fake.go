@@ -137,6 +137,23 @@ func (f *Fake) Requery(_ context.Context, sessionID string) (*provider.ProviderT
 	return nil, errors.New("fakeprov: session not found: " + sessionID)
 }
 
+func (f *Fake) Transfer(_ context.Context, req provider.TransferRequest) (*provider.TransferResponse, error) {
+	txID := fmt.Sprintf("fake-tx-%d", req.AmountKobo)
+	return &provider.TransferResponse{
+		TransactionID: txID,
+		SessionID:     "fake-session-" + txID,
+		Status:        "SUCCESSFUL",
+	}, nil
+}
+
+func (f *Fake) ResolveAccount(_ context.Context, bankCode, accountNumber string) (*provider.AccountResolution, error) {
+	return &provider.AccountResolution{
+		AccountName:   "FAKE ACCOUNT HOLDER",
+		AccountNumber: accountNumber,
+		BankCode:      bankCode,
+	}, nil
+}
+
 func (f *Fake) VerifyWebhookSignature(_ context.Context, _ map[string]string, _ []byte) error {
 	return nil // harness skips signature verification
 }

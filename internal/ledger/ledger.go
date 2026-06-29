@@ -70,6 +70,21 @@ func ReversalToSuspense(reversalTxID string, amountKobo int64) ([]domain.LedgerE
 	}, nil
 }
 
+// WithdrawCustomer returns entries for an outbound transfer (withdrawal):
+//
+//	DR  customer_wallet:{id}  amountKobo
+//	CR  nomba_settlement      amountKobo
+func WithdrawCustomer(txID, customerID string, amountKobo int64) ([]domain.LedgerEntry, error) {
+	if amountKobo <= 0 {
+		return nil, fmt.Errorf("ledger: amount must be positive, got %d", amountKobo)
+	}
+	wallet := domain.CustomerWalletAccount(customerID)
+	return []domain.LedgerEntry{
+		{TransactionID: txID, Account: wallet, Direction: "debit", AmountKobo: amountKobo},
+		{TransactionID: txID, Account: domain.AccountNombaSettlement, Direction: "credit", AmountKobo: amountKobo},
+	}, nil
+}
+
 // SuspenseToCustomer is used when ops resolves a suspense item by reassignment.
 //
 //	DR  suspense              amountKobo

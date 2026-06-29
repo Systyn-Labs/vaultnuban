@@ -21,6 +21,10 @@ type Provider interface {
 	ListTransactions(ctx context.Context, req ListTransactionsRequest) (*TransactionPage, error)
 	Requery(ctx context.Context, sessionID string) (*ProviderTransaction, error)
 
+	// Outbound transfers
+	Transfer(ctx context.Context, req TransferRequest) (*TransferResponse, error)
+	ResolveAccount(ctx context.Context, bankCode, accountNumber string) (*AccountResolution, error)
+
 	// Webhook handling
 	VerifyWebhookSignature(ctx context.Context, headers map[string]string, body []byte) error
 	ParseWebhook(ctx context.Context, body []byte) (*WebhookPayload, error)
@@ -81,6 +85,29 @@ type ProviderTransaction struct {
 	Narration     string
 	OccurredAt    time.Time
 	Raw           []byte // full JSON from Nomba
+}
+
+// ── Outbound transfer types ───────────────────────────────────────────────────
+
+type TransferRequest struct {
+	AmountKobo               int64
+	DestinationBankCode      string
+	DestinationAccountNumber string
+	DestinationAccountName   string
+	Narration                string
+	Reference                string // client-supplied idempotency reference
+}
+
+type TransferResponse struct {
+	TransactionID string
+	SessionID     string
+	Status        string // "SUCCESSFUL" | "FAILED" | "PENDING"
+}
+
+type AccountResolution struct {
+	AccountName   string
+	AccountNumber string
+	BankCode      string
 }
 
 // ── Webhook payload ───────────────────────────────────────────────────────────

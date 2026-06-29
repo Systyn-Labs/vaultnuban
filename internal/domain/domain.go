@@ -309,6 +309,46 @@ type TenantHealth struct {
 	Status           string
 }
 
+// ── Withdrawals (outbound transfers) ─────────────────────────────────────────
+
+type Withdrawal struct {
+	ID                       string
+	CustomerID               string
+	VirtualAccountID         *string
+	AmountKobo               int64
+	DestinationBankCode      string
+	DestinationAccountNumber string
+	DestinationAccountName   string
+	Narration                string
+	Status                   string // pending | processing | completed | failed
+	ProviderTransactionID    *string
+	ProviderSessionID        *string
+	FailureReason            *string
+	Raw                      []byte
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+}
+
+// ── Collections (dynamic payment requests) ───────────────────────────────────
+
+type Collection struct {
+	ID                 string
+	CustomerID         string
+	VirtualAccountID   *string
+	ExpectedAmountKobo *int64  // nil = any amount
+	Reference          string
+	Description        string
+	Status             string // open | fulfilled | expired | cancelled
+	ExpiresAt          *time.Time
+	FulfilledByTxnID   *string
+	FulfilledAt        *time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	// Enriched
+	NUBAN    string
+	BankName string
+}
+
 // ── Audit ─────────────────────────────────────────────────────────────────────
 
 type AuditEntry struct {

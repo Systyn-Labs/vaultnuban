@@ -78,6 +78,21 @@ func (r *CustomerRepo) GetCustomer(ctx context.Context, tenantID, customerID str
 	return c, err
 }
 
+func (r *CustomerRepo) GetCustomerByID(ctx context.Context, customerID string) (*domain.Customer, error) {
+	c, err := r.scanCustomer(ctx, `
+		SELECT c.id, c.tenant_id, c.external_ref, c.display_name, c.status, c.created_at, c.updated_at,
+		       i.id, i.customer_id, i.bvn_masked, i.nin_masked, i.kyc_tier, i.verification_status, i.created_at, i.updated_at
+		FROM customers c
+		LEFT JOIN identities i ON i.customer_id = c.id
+		WHERE c.id = $1`,
+		customerID,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return c, err
+}
+
 func (r *CustomerRepo) GetCustomerByExternalRef(ctx context.Context, tenantID, externalRef string) (*domain.Customer, error) {
 	c, err := r.scanCustomer(ctx, `
 		SELECT c.id, c.tenant_id, c.external_ref, c.display_name, c.status, c.created_at, c.updated_at,

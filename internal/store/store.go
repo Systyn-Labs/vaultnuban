@@ -26,6 +26,7 @@ type CustomerStore interface {
 	GetCustomerByExternalRef(ctx context.Context, tenantID, externalRef string) (*domain.Customer, error)
 	UpdateKYCTier(ctx context.Context, customerID string, newTier int, actor string) error
 	ListCustomers(ctx context.Context, tenantID string, limit int, cursor string) ([]*domain.Customer, string, error)
+	GetCustomerByID(ctx context.Context, customerID string) (*domain.Customer, error)
 }
 
 // VirtualAccountStore manages virtual account lifecycle.
@@ -63,6 +64,7 @@ type TransactionStore interface {
 type WebhookEventStore interface {
 	InsertWebhookEvent(ctx context.Context, evt *domain.WebhookEvent) (inserted bool, err error)
 	MarkWebhookProcessed(ctx context.Context, id, status string) error
+	ListWebhookEvents(ctx context.Context, limit int) ([]*domain.WebhookEvent, error)
 }
 
 // SuspenseStore manages suspense items and their resolution.
@@ -71,6 +73,7 @@ type SuspenseStore interface {
 	ListSuspenseItems(ctx context.Context, tenantID string, limit int, cursor string) ([]*domain.SuspenseItem, string, error)
 	ResolveSuspenseItem(ctx context.Context, itemID, resolution, actor, notes string) error
 	GetSuspenseItem(ctx context.Context, itemID string) (*domain.SuspenseItem, error)
+	ListOpenUnmatchedItems(ctx context.Context, limit int) ([]*domain.SuspenseItem, error)
 }
 
 // SweepStore records sweep run metadata.
@@ -103,6 +106,24 @@ type SettingsStore interface {
 	UpsertSetting(ctx context.Context, key string, value []byte) error
 	// SeedSetting inserts the value only if the key does not already exist.
 	SeedSetting(ctx context.Context, key string, value []byte) error
+}
+
+// CollectionStore manages dynamic payment collection records.
+type CollectionStore interface {
+	CreateCollection(ctx context.Context, c *domain.Collection) error
+	GetCollection(ctx context.Context, collectionID string) (*domain.Collection, error)
+	ListCollections(ctx context.Context, customerID string, limit int, cursor string) ([]*domain.Collection, string, error)
+	FulfillCollection(ctx context.Context, collectionID, txnID string) error
+	CancelCollection(ctx context.Context, collectionID string) error
+	FindOpenCollectionForVA(ctx context.Context, vaID string, amountKobo int64) (*domain.Collection, error)
+}
+
+// WithdrawalStore manages outbound withdrawal records.
+type WithdrawalStore interface {
+	CreateWithdrawal(ctx context.Context, w *domain.Withdrawal) error
+	GetWithdrawal(ctx context.Context, withdrawalID string) (*domain.Withdrawal, error)
+	UpdateWithdrawalStatus(ctx context.Context, withdrawalID, status string, provTxID, provSessionID, failureReason *string) error
+	ListWithdrawals(ctx context.Context, customerID string, limit int, cursor string) ([]*domain.Withdrawal, string, error)
 }
 
 // PlatformHealthStore aggregates platform-wide health metrics for the admin dashboard.

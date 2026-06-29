@@ -34,6 +34,32 @@ func (r *WebhookRepo) InsertWebhookEvent(ctx context.Context, evt *domain.Webhoo
 	return true, nil
 }
 
+func (r *WebhookRepo) ListWebhookEvents(ctx context.Context, limit int) ([]*domain.WebhookEvent, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, dedupe_key, event_type, signature_valid, status, payload, created_at, processed_at
+		FROM webhook_events
+		ORDER BY created_at DESC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("webhook repo: list: %w", err)
+	}
+	defer rows.Close()
+
+	var events []*domain.WebhookEvent
+	for rows.Next() {
+		var e domain.WebhookEvent
+		if err := rows.Scan(&e.ID, &e.DedupeKey, &e.EventType, &e.SignatureValid,
+			&e.Status, &e.Payload, &e.CreatedAt, &e.ProcessedAt); err != nil {
+			return nil, fmt.Errorf("webhook repo: scan: %w", err)
+		}
+		events = append(events, &e)
+	}
+	return events, nil
+}
+
 func (r *WebhookRepo) MarkWebhookProcessed(ctx context.Context, id, status string) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE webhook_events

@@ -21,27 +21,32 @@ import (
 
 // Dependencies groups every external dependency the API needs.
 type Dependencies struct {
-	TenantStore   store.TenantStore
-	HealthStore   store.PlatformHealthStore
-	AuditStore    store.AuditStore
-	AuthStore     store.AuthStore
-	WebhookStore  store.WebhookEventStore
-	CustomerStore store.CustomerStore
-	TxnStore      store.TransactionStore
-	VAStore       store.VirtualAccountStore
-	RelayStore    store.RelayStore
-	SweepStore    store.SweepStore
-	SettingsStore store.SettingsStore
-	TierLimits    *config.TierLimitsCache
-	Redis         *redis.Client
-	CustomerSvc   *service.CustomerService
-	Provisioning  *service.ProvisioningService
-	SuspenseSvc   *service.SuspenseService
-	Provider      provider.Provider
-	Worker        *recon.Worker
-	Sweep         *recon.SweepRunner
-	Dispatcher    *relay.Dispatcher
-	SweepToken    string
+	TenantStore     store.TenantStore
+	HealthStore     store.PlatformHealthStore
+	AuditStore      store.AuditStore
+	AuthStore       store.AuthStore
+	WebhookStore    store.WebhookEventStore
+	CustomerStore   store.CustomerStore
+	TxnStore        store.TransactionStore
+	VAStore         store.VirtualAccountStore
+	SuspenseStore   store.SuspenseStore
+	WithdrawalStore store.WithdrawalStore
+	RelayStore      store.RelayStore
+	SweepStore      store.SweepStore
+	SettingsStore   store.SettingsStore
+	TierLimits      *config.TierLimitsCache
+	Redis           *redis.Client
+	CustomerSvc     *service.CustomerService
+	Provisioning    *service.ProvisioningService
+	SuspenseSvc     *service.SuspenseService
+	WithdrawalSvc   *service.WithdrawalService
+	CollectionSvc   *service.CollectionService
+	CollectionStore store.CollectionStore
+	Provider        provider.Provider
+	Worker          *recon.Worker
+	Sweep           *recon.SweepRunner
+	Dispatcher      *relay.Dispatcher
+	SweepToken      string
 }
 
 // NewRouter builds and returns the fully configured chi router.
@@ -76,11 +81,17 @@ func NewRouter(deps Dependencies) http.Handler {
 	sweepH := handlers.NewSweepHandler(deps.Sweep, deps.SweepToken)
 	txnH := handlers.NewTransactionHandler(deps.TxnStore, deps.VAStore, deps.CustomerStore)
 	suspenseH := handlers.NewSuspenseHandler(deps.SuspenseSvc)
+	withdrawalH := handlers.NewWithdrawalHandler(deps.WithdrawalSvc, deps.WithdrawalStore)
+	collectionH := handlers.NewCollectionHandler(deps.CollectionSvc)
 	relayH := handlers.NewRelayHandler(deps.RelayStore, deps.Dispatcher)
 	settingsH := handlers.NewSettingsHandler(deps.SettingsStore, deps.TierLimits)
 	healthH := handlers.NewHealthHandler(deps.HealthStore, deps.SweepStore, deps.VAStore, deps.Provider)
 	auditH := handlers.NewAuditHandler(deps.AuditStore)
 	apiKeyH := handlers.NewAPIKeyHandler(deps.TenantStore)
+	internalOpsH := handlers.NewInternalOpsHandler(
+		deps.WebhookStore, deps.SuspenseStore, deps.TxnStore, deps.VAStore,
+		deps.CustomerStore, deps.SuspenseSvc, deps.Provider,
+	)
 
 	// Authenticated tenant API
 	r.Group(func(r chi.Router) {
@@ -110,7 +121,20 @@ func NewRouter(deps Dependencies) http.Handler {
 				r.Get("/transactions", txnH.ListTransactions)
 				r.Get("/statement", txnH.GetStatement)
 				r.Get("/balance", txnH.GetBalance)
+
+				// Withdrawals (outbound transfers)
+				r.Post("/withdrawals", withdrawalH.Initiate)
+				r.Get("/withdrawals", withdrawalH.List)
+
+				// Collections (dynamic payment requests)
+				r.Post("/collections", collectionH.Create)
+				r.Get("/collections", collectionH.List)
+				r.Get("/collections/{collectionID}", collectionH.Get)
+				r.Delete("/collections/{collectionID}", collectionH.Cancel)
 			})
+
+			// Payee account resolution
+			r.Get("/payees/resolve", withdrawalH.ResolvePayee)
 
 			// Suspense (Phase 6)
 			r.Get("/suspense", suspenseH.ListSuspense)
@@ -155,6 +179,8 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Get("/internal/suspense", healthH.ListCrossTenantSuspense)
 		r.Get("/internal/virtual-accounts", healthH.ListAllVAs)
 		r.Get("/internal/nomba-virtual-accounts", healthH.ListNombaVAs)
+		r.Get("/internal/webhook-events", internalOpsH.ListWebhookEvents)
+		r.Post("/internal/reprocess-suspense", internalOpsH.ReprocessSuspense)
 	})
 
 	return r

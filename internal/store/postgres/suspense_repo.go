@@ -105,6 +105,40 @@ func (r *SuspenseRepo) ListSuspenseItems(
 	return items, nextCursor, nil
 }
 
+func (r *SuspenseRepo) ListOpenUnmatchedItems(ctx context.Context, limit int) ([]*domain.SuspenseItem, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT s.id, s.transaction_id, s.reason, s.status,
+		       s.resolved_by, s.resolved_at, s.notes, s.created_at,
+		       t.amount_kobo, COALESCE(va.nuban, '')
+		FROM suspense_items s
+		JOIN transactions t ON t.id = s.transaction_id
+		LEFT JOIN virtual_accounts va ON va.id = t.virtual_account_id
+		WHERE s.status = 'open' AND s.reason = 'unmatched'
+		ORDER BY s.created_at ASC
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("suspense repo: list unmatched: %w", err)
+	}
+	defer rows.Close()
+
+	var items []*domain.SuspenseItem
+	for rows.Next() {
+		var s domain.SuspenseItem
+		var reason string
+		if err := rows.Scan(&s.ID, &s.TransactionID, &reason, &s.Status,
+			&s.ResolvedBy, &s.ResolvedAt, &s.Notes, &s.CreatedAt,
+			&s.AmountKobo, &s.NUBAN); err != nil {
+			return nil, fmt.Errorf("suspense repo: scan unmatched: %w", err)
+		}
+		s.Reason = domain.SuspenseReason(reason)
+		items = append(items, &s)
+	}
+	return items, nil
+}
+
 func (r *SuspenseRepo) ResolveSuspenseItem(
 	ctx context.Context,
 	itemID, resolution, actor, notes string,

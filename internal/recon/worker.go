@@ -10,6 +10,7 @@ import (
 	"github.com/systynlabs/vaultnuban/internal/logger"
 	"github.com/systynlabs/vaultnuban/internal/provider"
 	"github.com/systynlabs/vaultnuban/internal/relay"
+	"github.com/systynlabs/vaultnuban/internal/service"
 	"github.com/systynlabs/vaultnuban/internal/store"
 )
 
@@ -24,13 +25,14 @@ type WorkItem struct {
 
 // Worker reads WorkItems from a buffered channel and processes them.
 type Worker struct {
-	queue      chan WorkItem
-	matcher    *Matcher
-	txns       store.TransactionStore
-	webhooks   store.WebhookEventStore
-	suspense   store.SuspenseStore
-	customers  store.CustomerStore
-	dispatcher *relay.Dispatcher // nil when relay is not configured
+	queue       chan WorkItem
+	matcher     *Matcher
+	txns        store.TransactionStore
+	webhooks    store.WebhookEventStore
+	suspense    store.SuspenseStore
+	customers   store.CustomerStore
+	dispatcher  *relay.Dispatcher        // nil when relay is not configured
+	collections *service.CollectionService // nil when collections not wired
 }
 
 func NewWorker(
@@ -52,8 +54,10 @@ func NewWorker(
 }
 
 // SetDispatcher wires in the relay dispatcher after construction.
-// Call this in main.go once all dependencies are available.
 func (w *Worker) SetDispatcher(d *relay.Dispatcher) { w.dispatcher = d }
+
+// SetCollectionService wires in the collection service for fulfillment detection.
+func (w *Worker) SetCollectionService(svc *service.CollectionService) { w.collections = svc }
 
 // Enqueue adds a work item to the in-process queue.
 // Returns false if the queue is full — the webhook handler still acks;
@@ -182,6 +186,12 @@ func (w *Worker) processCredit(ctx context.Context, item WorkItem, pt provider.P
 	} else {
 		logger.Logf(workerCtx, "txn %s → wallet(%s) ₦%s",
 			pt.TransactionID, result.CustomerID, koboToNaira(pt.AmountKobo))
+		// Check if this payment fulfills an open collection.
+		if w.collections != nil && result.VA != nil {
+			if err := w.collections.TryFulfill(ctx, result.VA.ID, pt.TransactionID, pt.AmountKobo); err != nil {
+				logger.Warnf(workerCtx, "collection fulfillment check for txn %s: %v", pt.TransactionID, err)
+			}
+		}
 	}
 
 	if item.WebhookEventID != "" {
@@ -375,6 +385,10 @@ func (w *Worker) processCreditDirect(ctx context.Context, item WorkItem, pt prov
 	if suspensed {
 		if err := w.suspense.CreateSuspenseItem(ctx, result.Suspense); err != nil {
 			logger.Errorf(workerCtx, "create suspense item for %s: %v", pt.TransactionID, err)
+		}
+	} else if w.collections != nil && result.VA != nil {
+		if err := w.collections.TryFulfill(ctx, result.VA.ID, pt.TransactionID, pt.AmountKobo); err != nil {
+			logger.Warnf(workerCtx, "collection fulfillment check for txn %s: %v", pt.TransactionID, err)
 		}
 	}
 	return true, suspensed, nil

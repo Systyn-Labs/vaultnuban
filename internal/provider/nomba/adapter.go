@@ -160,10 +160,12 @@ func (a *Adapter) ListVAs(ctx context.Context, cursor string) (*provider.VAPage,
 // ── Transaction listing ───────────────────────────────────────────────────────
 
 // nombaListTransaction is the shape returned by GET /v1/transactions/accounts.
-// The list API only returns basic fields; NUBAN/senderName/etc. come via webhook only.
+// Most matching fields are absent; sessionId is included so the sweep can requery
+// each transaction to retrieve the full payload (accountRef, accountNumber, etc.).
 type nombaListTransaction struct {
 	TransactionID string `json:"id"`
-	Amount        string `json:"amount"` // Nomba returns naira as a string
+	SessionID     string `json:"sessionId"` // present when available; used for requery
+	Amount        string `json:"amount"`    // Nomba returns naira as a string
 	Type          string `json:"type"`
 	Status        string `json:"status"`
 	CreatedAt     string `json:"timeCreated"`
@@ -253,6 +255,85 @@ func (a *Adapter) Requery(ctx context.Context, sessionID string) (*provider.Prov
 	return &pt, nil
 }
 
+// ── Outbound transfers ────────────────────────────────────────────────────────
+
+type transferRequest struct {
+	Amount                       float64 `json:"amount"` // naira, not kobo
+	Narration                    string  `json:"narration"`
+	DestinationBankCode          string  `json:"destinationBankCode"`
+	DestinationBankAccountNumber string  `json:"destinationBankAccountNumber"`
+	Currency                     string  `json:"currency"`
+}
+
+type transferResponse struct {
+	Code string `json:"code"`
+	Data struct {
+		TransactionID string  `json:"transactionId"`
+		SessionID     string  `json:"sessionId"`
+		Amount        float64 `json:"amount"`
+		Status        string  `json:"status"`
+	} `json:"data"`
+}
+
+func (a *Adapter) Transfer(ctx context.Context, req provider.TransferRequest) (*provider.TransferResponse, error) {
+	amountNaira := float64(req.AmountKobo) / 100.0
+	body, _ := json.Marshal(transferRequest{
+		Amount:                       amountNaira,
+		Narration:                    req.Narration,
+		DestinationBankCode:          req.DestinationBankCode,
+		DestinationBankAccountNumber: req.DestinationAccountNumber,
+		Currency:                     "NGN",
+	})
+
+	resp, err := a.client.authDo(ctx, http.MethodPost, "/v1/transfers", body)
+	if err != nil {
+		return nil, fmt.Errorf("nomba: transfer: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var out transferResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("nomba: decode transfer: %w", err)
+	}
+
+	return &provider.TransferResponse{
+		TransactionID: out.Data.TransactionID,
+		SessionID:     out.Data.SessionID,
+		Status:        out.Data.Status,
+	}, nil
+}
+
+type resolveAccountResponse struct {
+	Code string `json:"code"`
+	Data struct {
+		AccountName   string `json:"accountName"`
+		AccountNumber string `json:"accountNumber"`
+		BankCode      string `json:"bankCode"`
+	} `json:"data"`
+}
+
+func (a *Adapter) ResolveAccount(ctx context.Context, bankCode, accountNumber string) (*provider.AccountResolution, error) {
+	q := url.Values{}
+	q.Set("bankCode", bankCode)
+	q.Set("accountNumber", accountNumber)
+	resp, err := a.client.authDo(ctx, http.MethodGet, "/v1/resolve/account?"+q.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("nomba: resolve account: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var out resolveAccountResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("nomba: decode resolve account: %w", err)
+	}
+
+	return &provider.AccountResolution{
+		AccountName:   out.Data.AccountName,
+		AccountNumber: out.Data.AccountNumber,
+		BankCode:      out.Data.BankCode,
+	}, nil
+}
+
 // ── Webhook signature ─────────────────────────────────────────────────────────
 
 // VerifyWebhookSignature implements FR-4.1.
@@ -310,8 +391,9 @@ func (a *Adapter) ParseWebhook(_ context.Context, body []byte) (*provider.Webhoo
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // convertListTransaction maps a nombaListTransaction (from the polling API) to a
-// ProviderTransaction. NUBAN/accountRef/senderName are absent from this API so
-// the matcher will fall back to suspense unless the webhook already posted it.
+// ProviderTransaction. Matching fields (accountRef, accountNumber) are absent from
+// this API, but sessionId is forwarded so the sweep can requery each transaction
+// to retrieve the full payload before attempting to match.
 func convertListTransaction(t nombaListTransaction) (provider.ProviderTransaction, error) {
 	var occurredAt time.Time
 	if t.CreatedAt != "" {
@@ -331,6 +413,7 @@ func convertListTransaction(t nombaListTransaction) (provider.ProviderTransactio
 	raw, _ := json.Marshal(t)
 	return provider.ProviderTransaction{
 		TransactionID: t.TransactionID,
+		SessionID:     t.SessionID, // forwarded for requery
 		AmountKobo:    amountKobo,
 		Type:          t.Type,
 		Status:        t.Status,
