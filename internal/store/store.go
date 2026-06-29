@@ -38,6 +38,7 @@ type VirtualAccountStore interface {
 	UpdateVAStatus(ctx context.Context, vaID, status, actor string) error
 	RenameVA(ctx context.Context, vaID, newName, actor string) error
 	ListVAs(ctx context.Context, tenantID string, limit int, cursor string) ([]*domain.VirtualAccount, string, error)
+	ListAllVAs(ctx context.Context, limit int, cursor string) ([]*domain.VirtualAccount, string, error)
 }
 
 // TransactionStore manages inbound transaction records and ledger entries.

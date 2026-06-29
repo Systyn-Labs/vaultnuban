@@ -875,6 +875,10 @@ func (s *VirtualAccountStore) ListVAs(_ context.Context, _ string, _ int, _ stri
 	return nil, "", nil
 }
 
+func (s *VirtualAccountStore) ListAllVAs(_ context.Context, _ int, _ string) ([]*domain.VirtualAccount, string, error) {
+	return nil, "", nil
+}
+
 func (s *TransactionStore) ListTenantTransactions(_ context.Context, _ string, _ int, _ string) ([]*domain.Transaction, string, error) {
 	return nil, "", nil
 }

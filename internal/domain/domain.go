@@ -90,8 +90,9 @@ type VirtualAccount struct {
 	Status          VAStatus
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
-	// Enriched from the linked customer (populated by ListVAs)
+	// Enriched from the linked customer/tenant (populated by list queries)
 	CustomerDisplayName string
+	TenantName          string
 }
 
 type VAStatus string

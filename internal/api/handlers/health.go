@@ -10,10 +10,11 @@ import (
 type HealthHandler struct {
 	healthStore store.PlatformHealthStore
 	sweepStore  store.SweepStore
+	vaStore     store.VirtualAccountStore
 }
 
-func NewHealthHandler(hs store.PlatformHealthStore, ss store.SweepStore) *HealthHandler {
-	return &HealthHandler{healthStore: hs, sweepStore: ss}
+func NewHealthHandler(hs store.PlatformHealthStore, ss store.SweepStore, vs store.VirtualAccountStore) *HealthHandler {
+	return &HealthHandler{healthStore: hs, sweepStore: ss, vaStore: vs}
 }
 
 func (h *HealthHandler) GetPlatformHealth(w http.ResponseWriter, r *http.Request) {
@@ -158,6 +159,48 @@ func (h *HealthHandler) ListSweepRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (h *HealthHandler) ListAllVAs(w http.ResponseWriter, r *http.Request) {
+	limit := queryInt(r, "limit", 50)
+	cursor := r.URL.Query().Get("cursor")
+	vas, next, err := h.vaStore.ListAllVAs(r.Context(), limit, cursor)
+	if err != nil {
+		serverErr(w, r, "ListAllVAs", err)
+		return
+	}
+
+	type vaResp struct {
+		ID                  string `json:"id"`
+		CustomerID          string `json:"customer_id"`
+		CustomerDisplayName string `json:"customer_display_name"`
+		TenantName          string `json:"tenant_name"`
+		NUBAN               string `json:"nuban"`
+		BankName            string `json:"bank_name"`
+		AccountName         string `json:"account_name"`
+		Status              string `json:"status"`
+		CreatedAt           string `json:"created_at"`
+	}
+	type resp struct {
+		Data       []vaResp `json:"data"`
+		NextCursor string   `json:"next_cursor,omitempty"`
+	}
+	out := resp{Data: make([]vaResp, 0, len(vas))}
+	for _, va := range vas {
+		out.Data = append(out.Data, vaResp{
+			ID:                  va.ID,
+			CustomerID:          va.CustomerID,
+			CustomerDisplayName: va.CustomerDisplayName,
+			TenantName:          va.TenantName,
+			NUBAN:               va.NUBAN,
+			BankName:            va.BankName,
+			AccountName:         va.AccountName,
+			Status:              string(va.Status),
+			CreatedAt:           va.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		})
+	}
+	out.NextCursor = next
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (h *HealthHandler) ListCrossTenantSuspense(w http.ResponseWriter, r *http.Request) {

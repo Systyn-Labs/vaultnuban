@@ -106,6 +106,55 @@ func (r *VARepo) RenameVA(ctx context.Context, vaID, newName, _ string) error {
 	return nil
 }
 
+func (r *VARepo) ListAllVAs(ctx context.Context, limit int, cursor string) ([]*domain.VirtualAccount, string, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	base := `
+		SELECT va.id, va.customer_id, va.nomba_account_ref, va.nuban, va.bank_name,
+		       va.account_name, va.nomba_holder_id, va.status, va.created_at, va.updated_at,
+		       COALESCE(c.display_name, ''), COALESCE(t.name, '')
+		FROM virtual_accounts va
+		JOIN customers c ON c.id = va.customer_id
+		JOIN tenants t ON t.id = c.tenant_id`
+
+	var rows pgx.Rows
+	var err error
+	if cursor == "" {
+		rows, err = r.pool.Query(ctx, base+` ORDER BY va.created_at DESC LIMIT $1`, limit+1)
+	} else {
+		rows, err = r.pool.Query(ctx, base+`
+			WHERE va.created_at < (SELECT created_at FROM virtual_accounts WHERE id = $2)
+			ORDER BY va.created_at DESC LIMIT $1`, limit+1, cursor)
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("va repo: list all: %w", err)
+	}
+	defer rows.Close()
+
+	var items []*domain.VirtualAccount
+	for rows.Next() {
+		var va domain.VirtualAccount
+		var status string
+		if err := rows.Scan(
+			&va.ID, &va.CustomerID, &va.NombaAccountRef, &va.NUBAN, &va.BankName,
+			&va.AccountName, &va.NombaHolderID, &status, &va.CreatedAt, &va.UpdatedAt,
+			&va.CustomerDisplayName, &va.TenantName,
+		); err != nil {
+			return nil, "", fmt.Errorf("va repo: list all scan: %w", err)
+		}
+		va.Status = domain.VAStatus(status)
+		items = append(items, &va)
+	}
+
+	var nextCursor string
+	if len(items) > limit {
+		nextCursor = items[limit-1].ID
+		items = items[:limit]
+	}
+	return items, nextCursor, nil
+}
+
 func (r *VARepo) scan(ctx context.Context, query string, args ...any) (*domain.VirtualAccount, error) {
 	var va domain.VirtualAccount
 	var status string

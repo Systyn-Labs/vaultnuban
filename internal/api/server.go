@@ -78,7 +78,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	suspenseH := handlers.NewSuspenseHandler(deps.SuspenseSvc)
 	relayH := handlers.NewRelayHandler(deps.RelayStore, deps.Dispatcher)
 	settingsH := handlers.NewSettingsHandler(deps.SettingsStore, deps.TierLimits)
-	healthH := handlers.NewHealthHandler(deps.HealthStore, deps.SweepStore)
+	healthH := handlers.NewHealthHandler(deps.HealthStore, deps.SweepStore, deps.VAStore)
 	auditH := handlers.NewAuditHandler(deps.AuditStore)
 	apiKeyH := handlers.NewAPIKeyHandler(deps.TenantStore)
 
@@ -153,6 +153,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Get("/internal/health", healthH.GetPlatformHealth)
 		r.Get("/internal/sweep-runs", healthH.ListSweepRuns)
 		r.Get("/internal/suspense", healthH.ListCrossTenantSuspense)
+		r.Get("/internal/virtual-accounts", healthH.ListAllVAs)
 	})
 
 	return r
