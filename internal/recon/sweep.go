@@ -55,13 +55,21 @@ type SweepResult struct {
 }
 
 // Run executes one full sweep and records the run log (FR-6.1 – FR-6.5).
-func (s *SweepRunner) Run(ctx context.Context) (*SweepResult, error) {
+// If overrideFrom is non-zero it is used as the window start, bypassing the
+// stored last-sweep time. Useful for one-off backfills.
+func (s *SweepRunner) Run(ctx context.Context, overrideFrom ...time.Time) (*SweepResult, error) {
 	start := time.Now()
 
 	windowTo := start
-	windowFrom, err := s.computeWindowFrom(ctx, windowTo)
-	if err != nil {
-		return nil, fmt.Errorf("sweep: compute window: %w", err)
+	var windowFrom time.Time
+	if len(overrideFrom) > 0 && !overrideFrom[0].IsZero() {
+		windowFrom = overrideFrom[0]
+	} else {
+		var err error
+		windowFrom, err = s.computeWindowFrom(ctx, windowTo)
+		if err != nil {
+			return nil, fmt.Errorf("sweep: compute window: %w", err)
+		}
 	}
 
 	logger.Logf(sweepCtx, "starting — window %s → %s",

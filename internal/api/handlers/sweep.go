@@ -3,6 +3,7 @@ package handlers
 import (
 	"crypto/subtle"
 	"net/http"
+	"time"
 
 	"github.com/systynlabs/vaultnuban/internal/api/problem"
 	"github.com/systynlabs/vaultnuban/internal/logger"
@@ -32,9 +33,21 @@ func (h *SweepHandler) HandleSweep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logger.Log(sweepHandlerCtx, "sweep triggered by cron")
+	// Optional ?from= override (RFC3339) for one-off backfills.
+	var overrideFrom time.Time
+	if fromStr := r.URL.Query().Get("from"); fromStr != "" {
+		if t, err := time.Parse(time.RFC3339, fromStr); err == nil {
+			overrideFrom = t
+			logger.Logf(sweepHandlerCtx, "sweep triggered with explicit from=%s", fromStr)
+		} else {
+			problem.BadRequest(w, "from must be RFC3339, e.g. 2026-06-29T00:00:00Z")
+			return
+		}
+	} else {
+		logger.Log(sweepHandlerCtx, "sweep triggered by cron")
+	}
 
-	result, err := h.runner.Run(r.Context())
+	result, err := h.runner.Run(r.Context(), overrideFrom)
 	if err != nil {
 		logger.Errorf(sweepHandlerCtx, "sweep failed: %v", err)
 		// Still return 200 with partial results so the cron doesn't retry
