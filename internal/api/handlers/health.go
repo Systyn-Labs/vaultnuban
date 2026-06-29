@@ -2,9 +2,11 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/systynlabs/vaultnuban/internal/provider"
+	"github.com/systynlabs/vaultnuban/internal/provider/nomba"
 	"github.com/systynlabs/vaultnuban/internal/store"
 )
 
@@ -209,6 +211,16 @@ func (h *HealthHandler) ListNombaVAs(w http.ResponseWriter, r *http.Request) {
 	cursor := r.URL.Query().Get("cursor")
 	page, err := h.provider.ListVAs(r.Context(), cursor)
 	if err != nil {
+		var apiErr *nomba.APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden {
+			// Nomba does not permit listing VAs with these credentials.
+			writeJSON(w, http.StatusOK, map[string]any{
+				"data":        []any{},
+				"unavailable": true,
+				"reason":      "The Nomba account credentials do not have permission to list virtual accounts.",
+			})
+			return
+		}
 		serverErr(w, r, "ListNombaVAs", err)
 		return
 	}
