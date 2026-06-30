@@ -4,7 +4,17 @@
 
 Multi-tenant dedicated virtual account (DVA) infrastructure built on the [Nomba Virtual Accounts API](https://developer.nomba.com). Built for the **DevCareer × Nomba Hackathon — Infrastructure Track**.
 
-Each tenant onboards customers, provisions a unique 10-digit NUBAN for each one, and receives inbound transfers to a double-entry ledger — with webhook relay, suspense management, KYC-tier enforcement, and sweep-based reconciliation.
+Each tenant onboards customers, provisions a unique 10-digit NUBAN for each one, and receives inbound transfers into a double-entry ledger — with webhook relay, withdrawals, collections, suspense management, KYC-tier enforcement, and sweep-based reconciliation.
+
+**Live links**
+
+| Surface | URL |
+|---------|-----|
+| API | https://vaultnuban.onrender.com |
+| Dashboard | https://vaultnuban-client.pages.dev |
+| Docs | https://vaultnuban-docs.pages.dev |
+| Dashboard repo | https://github.com/kellslte/vaultnuban-client |
+| Docs repo | https://github.com/Systyn-Labs/vaultnuban-docs |
 
 ---
 
@@ -19,6 +29,8 @@ Each tenant onboards customers, provisions a unique 10-digit NUBAN for each one,
 - [Reconciliation](#reconciliation)
 - [Suspense management](#suspense-management)
 - [Webhook relay](#webhook-relay)
+- [Withdrawals](#withdrawals)
+- [Collections](#collections)
 - [KYC tier limits](#kyc-tier-limits)
 - [Running tests](#running-tests)
 - [Deployment](#deployment)
@@ -46,11 +58,13 @@ Sender → Nomba → Virtual NUBAN
     customer_wallet            suspense
     (double-entry ledger)      (manual resolution)
           │
-          └──→ Tenant relay endpoints (FR-11)
+          └──→ Tenant relay endpoints
                fan-out signed HTTP POST to registered URLs
 ```
 
-A **sweep runner** polls the Nomba Transactions API on a configurable interval to catch any payments the webhook ingestor missed. Both paths share the same `ProcessDirect` code and the same idempotency guard, so double-posting is impossible.
+A **sweep runner** polls the Nomba Transactions API on a configurable interval to catch any payments the webhook ingestor missed. Both paths share the same idempotent `PostTransaction` function, so double-posting is structurally impossible.
+
+> **Note:** VA inbound NIP credits are delivered by Nomba via webhook only — they do not appear in the Transactions API. The sweep acts as a backstop for other transaction types and keeps the free-tier instance warm.
 
 ---
 
@@ -66,7 +80,7 @@ A **sweep runner** polls the Nomba Transactions API on a configurable interval t
 | **Async processing** | In-process buffered channel (512 items). If full, the webhook acks immediately and the sweep recovers. |
 | **Multi-tenancy** | Every row is scoped by `tenant_id`. Cross-tenant lookups return 404, not 403. |
 | **Error format** | [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) `application/problem+json` on all error responses. |
-| **Logging** | NestJS-style console output with ANSI colours, TTY detection, and log-level alignment. |
+| **Logging** | Structured console output with ANSI colours, TTY detection, and log-level alignment. |
 
 ---
 
@@ -82,27 +96,29 @@ vaultnuban/
 ├── internal/
 │   ├── api/
 │   │   ├── handlers/    # HTTP handlers: customers, virtual_accounts, transactions,
-│   │   │                #   suspense, relay, webhook, sweep
+│   │   │                #   suspense, relay, webhook, sweep, withdrawals, collections
 │   │   ├── middleware/  # Auth (API key hash), idempotency (Redis), request logger
 │   │   └── problem/     # RFC 9457 problem detail helpers
 │   ├── config/          # Typed env-var loading
 │   ├── domain/          # Pure entity types — no I/O
 │   ├── ledger/          # Only place that constructs LedgerEntry slices
-│   ├── logger/          # NestJS-style structured logger
+│   ├── logger/          # Structured logger
 │   ├── provider/
-│   │   ├── nomba/       # Nomba API client (OAuth2, virtual accounts, transactions, webhooks)
+│   │   ├── nomba/       # Nomba API client (OAuth2, virtual accounts, transactions,
+│   │   │                #   webhooks, transfers v2, account resolution)
 │   │   └── fakeprov/    # In-memory provider for harness tests
 │   ├── recon/
 │   │   ├── matcher.go   # NUBAN → customer resolution, tier-limit checks
 │   │   ├── worker.go    # Async credit/reversal processor + ProcessDirect for sweep
 │   │   └── sweep.go     # Nomba Transactions API poller
 │   ├── relay/           # Tenant webhook fan-out (HMAC-signed, retry with back-off)
-│   ├── service/         # Business logic: customer, provisioning, suspense
+│   ├── service/         # Business logic: customer, provisioning, suspense,
+│   │                    #   withdrawals, collections
 │   └── store/
 │       ├── store.go     # Repository interfaces
 │       ├── db.go        # pgxpool + custom migration runner
 │       ├── memstore/    # In-memory store implementations (harness / unit tests)
-│       ├── migrations/  # 015 numbered SQL migrations (up + down)
+│       ├── migrations/  # Numbered SQL migrations (up + down)
 │       └── postgres/    # pgx implementations of every store interface
 ├── .env.example
 ├── Dockerfile
@@ -116,16 +132,16 @@ vaultnuban/
 
 ### Prerequisites
 
-- Go 1.26+
+- Go 1.22+
 - PostgreSQL 15+ (or a [Neon](https://neon.tech) free project)
 - Redis 7+ (or an [Upstash](https://upstash.com) free database)
-- A [Nomba developer account](https://developer.nomba.com) with a configured app
+- A [Nomba developer account](https://developer.nomba.com) with a configured app and sub-account ID
 
 ### Local setup
 
 ```bash
 # 1. Clone the repo
-git clone https://github.com/your-org/vaultnuban.git
+git clone https://github.com/Systyn-Labs/vaultnuban.git
 cd vaultnuban
 
 # 2. Copy and fill in environment variables
@@ -134,10 +150,10 @@ cp .env.example .env
 
 # 3. Build and run
 make run
-# The server starts on :8080 and applies all migrations automatically on boot.
+# The server starts on :32091 and applies all migrations automatically on boot.
 
 # 4. Verify
-curl http://localhost:8080/healthz
+curl http://localhost:32091/healthz
 # {"status":"ok"}
 ```
 
@@ -157,15 +173,16 @@ make docker-run   # reads .env file automatically
 | `NOMBA_CLIENT_ID` | ✅ | — | Nomba app client ID |
 | `NOMBA_CLIENT_SECRET` | ✅ | — | Nomba app client secret |
 | `NOMBA_ACCOUNT_ID` | ✅ | — | Your Nomba parent account ID |
-| `NOMBA_BASE_URL` | ✅ | — | `https://api.nomba.com/v1` |
-| `NOMBA_WEBHOOK_SECRET` | ✅ | — | Webhook signing secret from Nomba portal |
+| `NOMBA_SUB_ACCOUNT_ID` | ✅ | — | Sub-account ID for VA creation and transaction queries |
+| `NOMBA_BASE_URL` | ✅ | — | `https://api.nomba.com` (production) or `https://sandbox.nomba.com` |
+| `NOMBA_WEBHOOK_SECRET` | ✅ | — | Webhook signing secret |
 | `DATABASE_URL` | ✅ | — | PostgreSQL connection string (e.g. Neon pooled URL) |
 | `REDIS_URL` | ✅ | — | Redis URL (`rediss://` for TLS, e.g. Upstash) |
-| `INTERNAL_SWEEP_TOKEN` | ✅ | — | Bearer token for `GET /internal/sweep` |
-| `SWEEP_INTERVAL` | | `10m` | How far back the first sweep looks |
+| `INTERNAL_SWEEP_TOKEN` | ✅ | — | Bearer token for `POST /internal/sweep` |
+| `SWEEP_INTERVAL` | | `10m` | How often the sweep runs |
 | `SWEEP_OVERLAP` | | `15m` | Overlap window to catch late-arriving events |
 | `TIER_LIMITS_JSON` | | CBN defaults | JSON map of KYC tier → daily/balance caps (kobo) |
-| `PORT` | | `8080` | HTTP listen port (set automatically by Render) |
+| `PORT` | | `32091` | HTTP listen port |
 | `ENV` | | `development` | Runtime environment label |
 
 See [`.env.example`](.env.example) for a fully annotated template.
@@ -174,28 +191,60 @@ See [`.env.example`](.env.example) for a fully annotated template.
 
 ## API reference
 
-A full [OpenAPI 3.1 spec](docs/openapi.yaml) is included. Import it into any OpenAPI-compatible tool (Swagger UI, Stoplight, Redocly, etc.).
+Full documentation is available at **https://vaultnuban-docs.pages.dev**.
 
-A [Bruno collection](docs/bruno/) is also provided with pre-wired environments for local and production. Post-response scripts automatically capture IDs into collection variables so requests can be run in sequence.
+A [Bruno collection](docs/bruno/) and Postman collection are also provided with pre-wired environments for local and production. Post-response scripts automatically capture IDs into collection variables so requests can be run in sequence.
 
-### Quick endpoint map
+### Endpoint map
+
+**Tenant API** — `Authorization: Bearer <api_key>` required
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/healthz` | Liveness check — no auth |
-| `POST` | `/v1/customers` | Create (or retrieve) a customer |
-| `PATCH` | `/v1/customers/{id}/identity` | Upgrade KYC tier |
+| `POST` | `/v1/customers` | Create a customer |
+| `GET` | `/v1/customers` | List customers (cursor-paginated) |
+| `PATCH` | `/v1/customers/{id}/identity` | Update KYC tier |
+| `GET` | `/v1/customers/{id}/balance` | Computed balance |
 | `POST` | `/v1/customers/{id}/virtual-account` | Provision a NUBAN |
 | `GET` | `/v1/customers/{id}/virtual-account` | Get virtual account details |
 | `PATCH` | `/v1/customers/{id}/virtual-account` | Rename / suspend / unsuspend |
-| `DELETE` | `/v1/customers/{id}/virtual-account` | Close (irreversible) |
-| `GET` | `/v1/customers/{id}/transactions` | List transactions (cursor pagination) |
+| `DELETE` | `/v1/customers/{id}/virtual-account` | Close (irreversible) — 204 |
+| `GET` | `/v1/virtual-accounts` | All VAs for tenant |
+| `GET` | `/v1/transactions` | Tenant-wide transactions (cursor-paginated) |
 | `GET` | `/v1/customers/{id}/statement` | Account statement with running balance |
 | `GET` | `/v1/suspense` | List open suspense items |
-| `POST` | `/v1/suspense/{itemID}/resolve` | Resolve (reassign or flag for refund) |
-| `POST` | `/v1/webhook-endpoints` | Register a tenant relay URL |
-| `POST` | `/webhooks/nomba` | Nomba payment event ingestor — HMAC verified |
-| `GET/HEAD` | `/internal/sweep` | Trigger reconciliation sweep |
+| `PATCH` | `/v1/suspense/{id}` | Resolve (reassign or refund_flagged) |
+| `GET` | `/v1/payees/resolve` | Resolve bank account name before withdrawal |
+| `POST` | `/v1/customers/{id}/withdrawals` | Initiate outbound bank transfer |
+| `GET` | `/v1/customers/{id}/withdrawals` | List withdrawals |
+| `POST` | `/v1/customers/{id}/collections` | Create a payment collection request |
+| `GET` | `/v1/customers/{id}/collections` | List collections |
+| `GET` | `/v1/customers/{id}/collections/{cid}` | Get collection |
+| `DELETE` | `/v1/customers/{id}/collections/{cid}` | Cancel collection — 204 |
+| `POST` | `/v1/webhook-endpoints` | Register a relay URL |
+| `GET` | `/v1/webhook-endpoints` | List relay endpoints |
+| `GET` | `/v1/webhook-deliveries` | List relay delivery attempts |
+| `POST` | `/v1/webhook-deliveries/{id}/replays` | Manual replay |
+| `GET` | `/v1/api-keys` | List API keys |
+| `POST` | `/v1/api-keys` | Create API key |
+| `DELETE` | `/v1/api-keys/{id}` | Revoke API key |
+| `GET` | `/v1/audit` | Audit log |
+
+**Ingest & internal**
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `POST` | `/webhooks/nomba` | HMAC (Nomba) | Payment event ingestor |
+| `POST` | `/internal/sweep` | sweep token | Trigger reconciliation sweep |
+| `GET` | `/internal/health` | admin token | Global platform health (Σ DR = Σ CR) |
+| `GET` | `/internal/sweep-runs` | admin token | Sweep run log |
+| `GET` | `/internal/tenants` | admin token | List tenants |
+| `POST` | `/internal/tenants` | admin token | Onboard tenant |
+| `GET` | `/internal/suspense` | admin token | Cross-tenant suspense |
+| `GET` | `/internal/virtual-accounts` | admin token | All VAs across tenants |
+| `GET` | `/internal/nomba-virtual-accounts` | admin token | Nomba VA list |
+| `GET` | `/internal/webhook-events` | admin token | Webhook event log |
 
 ### Authentication
 
@@ -232,20 +281,22 @@ Payment events arrive via two paths that converge on the same idempotent `PostTr
 1. Nomba POSTs to `/webhooks/nomba`
 2. Signature verified (HMAC-SHA256), timestamp checked (5-min replay window), event deduped by `transactionId:eventType`
 3. Acked `200` immediately; enqueued to in-process channel (512 buffer)
-4. Worker processes: match NUBAN → customer, check tier limits, post ledger entries
+4. Worker processes: match NUBAN → customer, check tier limits, post balanced ledger entries
 
 **Sweep path (recovery)**
-- `GET /internal/sweep` (or `HEAD` for UptimeRobot free plan) polls the Nomba Transactions API from `lastSweepTime − overlap` to `now`
-- Transactions already posted by the webhook are skipped (idempotent by transactionId primary key)
-- Sweep result is returned in the response body and logged to `sweep_runs`
+- `POST /internal/sweep` polls `POST /v1/transactions/accounts/{subAccountId}` with `{"type":"transfer"}` from `lastSweepTime − overlap` to `now`
+- Transactions already posted by the webhook are skipped (idempotent by `transactionId` primary key)
+- Run result is persisted to `sweep_runs` and returned in the response body
 
-Configure UptimeRobot (or any HTTP monitor) to hit `/internal/sweep` every 5 minutes with `Authorization: Bearer <INTERNAL_SWEEP_TOKEN>` — this both keeps the Render free-tier instance alive and drives the sweep.
+> **Important:** VA inbound NIP credits only arrive via webhook — they do not appear in Nomba's Transactions API. The sweep covers other transaction types. Register `/webhooks/nomba` with Nomba production to ensure VA credit durability.
+
+Configure UptimeRobot (or any HTTP monitor) to POST to `/internal/sweep` every 5 minutes with `Authorization: Bearer <INTERNAL_SWEEP_TOKEN>` — this both keeps the Render free-tier instance alive and drives the sweep.
 
 ---
 
 ## Suspense management
 
-Credits that cannot be cleanly posted to a customer wallet are routed to the suspense ledger account instead. Reasons:
+Credits that cannot be cleanly posted to a customer wallet are routed to the suspense ledger account. Reasons:
 
 | Reason | Trigger |
 |--------|---------|
@@ -254,18 +305,18 @@ Credits that cannot be cleanly posted to a customer wallet are routed to the sus
 | `suspended_account` | NUBAN belongs to a SUSPENDED virtual account |
 | `tier_limit` | Credit would breach the customer's KYC-tier daily cap or max balance |
 
-Suspense items are resolved via `POST /v1/suspense/{itemID}/resolve`:
+Suspense items are resolved via `PATCH /v1/suspense/{id}`:
 
-- **`reassign`** — posts compensating ledger entries (DR suspense / CR customer_wallet) to transfer the funds to a specified customer. Requires `target_customer_id`.
-- **`refund_flagged`** — marks the item for manual bank reversal. Funds remain in the suspense account. No ledger entries posted.
+- **`reassign`** — posts compensating ledger entries (DR suspense / CR customer_wallet). Requires `target_customer_id`.
+- **`refund_flagged`** — marks the item for manual bank reversal. Funds remain in suspense.
 
-The double-entry invariant (Σ debits = Σ credits) is maintained across all paths including resolution.
+The `Σ debits = Σ credits` invariant holds across all paths including suspense resolution.
 
 ---
 
 ## Webhook relay
 
-Tenants can register one or more URLs to receive payment event notifications:
+Tenants register one or more URLs to receive signed payment event notifications:
 
 ```http
 POST /v1/webhook-endpoints
@@ -277,7 +328,7 @@ Authorization: Bearer <api_key>
 }
 ```
 
-When a credit is posted to a customer wallet, VaultNUBAN fans out a signed HTTP POST to all active relay endpoints for that tenant. Each request includes:
+Each delivery includes:
 
 ```
 X-VaultNUBAN-Signature: sha256=<hmac-hex>
@@ -285,12 +336,48 @@ X-VaultNUBAN-Attempt: 1
 Content-Type: application/json
 ```
 
-Verify the signature on your end:
-```
-expectedSig = "sha256=" + HMAC-SHA256(requestBody, SHA256(yourSecret))
+Failed deliveries retry with exponential back-off before moving to `dead_letter`. Use `POST /v1/webhook-deliveries/{id}/replays` to manually replay any delivery.
+
+---
+
+## Withdrawals
+
+Initiate an outbound bank transfer on behalf of a customer in two steps:
+
+```bash
+# 1. Resolve the destination account name first
+GET /v1/payees/resolve?bank_code=999999&account_number=0123456789
+
+# 2. Initiate the transfer
+POST /v1/customers/{id}/withdrawals
+{
+  "amount_kobo": 500000,
+  "destination_bank_code": "999999",
+  "destination_account_number": "0123456789",
+  "destination_account_name": "Amaka Osei",
+  "narration": "Payout - July invoice"
+}
 ```
 
-Failed deliveries are retried with exponential back-off (30 s → 5 min) before being moved to `dead_letter` after 3 attempts.
+Withdrawals are processed via Nomba's `POST /v2/transfers/bank/{subAccountId}`. Status lifecycle: `pending → processing → completed | failed`.
+
+---
+
+## Collections
+
+Create a time-bound, optionally amount-constrained payment request tied to a customer's existing NUBAN:
+
+```bash
+POST /v1/customers/{id}/collections
+{
+  "reference": "INV-2026-001",
+  "description": "July subscription",
+  "expected_amount_kobo": 500000,
+  "expires_in_seconds": 604800
+}
+```
+
+The response includes the customer's NUBAN and bank name to share with the payer. When a matching inbound credit arrives, the collection status automatically moves to `fulfilled`. Statuses: `open → fulfilled | expired | cancelled`.
 
 ---
 
@@ -304,7 +391,7 @@ Limits are configured via `TIER_LIMITS_JSON`. The default matches CBN regulation
 | 2 | ₦200,000 | ₦5,000,000 |
 | 3 | Uncapped | Uncapped |
 
-All amounts are stored and computed in kobo (₦1 = 100 kobo). A credit that would breach either limit is routed to suspense with reason `tier_limit` rather than being rejected — the funds are safe and can be reassigned once the customer's tier is upgraded.
+All amounts are stored and computed in kobo (₦1 = 100 kobo). A credit that would breach either limit is routed to suspense with reason `tier_limit`.
 
 ---
 
@@ -318,7 +405,7 @@ make test
 make harness
 ```
 
-The harness (`harness/harness_test.go`) runs 8 scenarios entirely in-memory — no database or network required:
+The harness (`harness/harness_test.go`) runs scenarios entirely in-memory — no database or network required:
 
 | Scenario | What it proves |
 |----------|---------------|
@@ -331,7 +418,7 @@ The harness (`harness/harness_test.go`) runs 8 scenarios entirely in-memory — 
 | I-07 | Tier-1 max-balance cap — overflow credit goes to suspense |
 | I-08 | Sweep encounters already-posted txnId — skips it |
 
-Every scenario ends with an NFR-1 assertion: `Σ credits == Σ debits` across all ledger accounts. Any imbalance fails the test immediately.
+Every scenario ends with an NFR-1 assertion: `Σ credits == Σ debits` across all ledger accounts.
 
 ---
 
@@ -342,10 +429,8 @@ Every scenario ends with an NFR-1 assertion: `Σ credits == Σ debits` across al
 1. Fork or push this repo to GitHub
 2. In the [Render dashboard](https://render.com), click **New → Blueprint** and connect the repo
 3. Render detects `render.yaml` and creates the service automatically
-4. Set the following env vars manually in **Environment** (they are marked `sync: false` in the Blueprint):
-   - `NOMBA_CLIENT_ID`
-   - `NOMBA_CLIENT_SECRET`
-   - `NOMBA_ACCOUNT_ID`
+4. Set the following env vars in **Environment**:
+   - `NOMBA_CLIENT_ID`, `NOMBA_CLIENT_SECRET`, `NOMBA_ACCOUNT_ID`, `NOMBA_SUB_ACCOUNT_ID`
    - `NOMBA_WEBHOOK_SECRET`
    - `DATABASE_URL` — paste the **pooled** connection string from [Neon](https://neon.tech)
    - `REDIS_URL` — paste the `rediss://` URL from [Upstash](https://upstash.com)
@@ -358,32 +443,38 @@ Every scenario ends with an NFR-1 assertion: `Σ credits == Σ debits` across al
 |-------|-------|
 | Monitor type | HTTP(s) |
 | URL | `https://vaultnuban.onrender.com/internal/sweep` |
-| Method | **HEAD** (required for UptimeRobot free plan) |
+| Method | POST |
 | Interval | 5 minutes |
 | Custom header | `Authorization: Bearer <INTERNAL_SWEEP_TOKEN>` |
 
-This single monitor keeps the free-tier instance warm and drives the reconciliation sweep. The `HEAD` method triggers the sweep handler normally — chi runs it but discards the response body per the HTTP spec.
-
 ### Register the Nomba webhook
 
-In the Nomba developer portal, set your webhook URL to:
+In the Nomba developer portal (or via API), set your webhook URL to:
 
 ```
 https://vaultnuban.onrender.com/webhooks/nomba
 ```
 
+This is the only mechanism by which VA inbound NIP credits are delivered. Ensure this endpoint is registered and reachable before any production testing.
+
 ---
 
 ## Design decisions
 
-**Why not hold funds long-term / use Nomba subaccounts?**
-Nomba Virtual Accounts are routing identifiers — inbound transfers land in the tenant's Nomba parent account, not in a segregated float. VaultNUBAN's ledger is a liability ledger (accounting record), not a PSP-held float. Subaccounts serve a different use case (segregated settlement pools). This design matches the hackathon brief and Nomba's DVA product.
+**SubAccountID as a first-class concept**
+Nomba VA creation, transaction queries, and transfers all require a `subAccountId` as a path parameter (not a body field). `NOMBA_SUB_ACCOUNT_ID` is a required environment variable that scopes all VA operations to a specific sub-account, isolating our VAs from other teams' activity on the shared parent account.
+
+**accountRef has a random suffix**
+The format `t{8hex}c{20hex}{8hex_random}` ensures re-provisioning the same customer never collides on Nomba's side — Nomba sandbox does not honour VA deletion, so a purely deterministic ref would 400 on re-provision. The local `GetActiveVA` guard still prevents duplicate active VAs in our system.
+
+**Why not hold funds long-term / use Nomba subaccounts as wallets?**
+Nomba Virtual Accounts are routing identifiers — inbound transfers land in the tenant's Nomba parent account. VaultNUBAN's ledger is a liability ledger (accounting record), not a PSP-held float. This design matches the hackathon brief and Nomba's DVA product intent.
 
 **Why a custom migration runner instead of golang-migrate?**
-`golang-migrate/migrate/v4/database/postgres` pulls in Docker test dependencies (`opencontainers/image-spec`) whose `go.sum` checksum conflicted in the module graph. The custom runner is ~60 lines using `embed.FS` + pgx, applies migrations idempotently via a `schema_migrations` table, and has zero transitive dependencies.
+`golang-migrate/migrate/v4/database/postgres` pulls in Docker test dependencies whose `go.sum` checksums conflicted in the module graph. The custom runner is ~60 lines using `embed.FS` + pgx, applies migrations idempotently via a `schema_migrations` table, and has zero transitive dependencies.
 
 **Why `ON CONFLICT DO NOTHING` instead of `ON CONFLICT DO UPDATE`?**
-Webhook delivery and sweep processing race constantly. The natural idempotency key is Nomba's `transactionId` (the primary key on `transactions`). Silently ignoring the second insert is correct: the first writer wins, all subsequent attempts are no-ops. No lost updates, no compare-and-swap complexity.
+Webhook delivery and sweep processing race constantly. The natural idempotency key is Nomba's `transactionId` (the primary key on `transactions`). Silently ignoring the second insert is correct: the first writer wins, all subsequent attempts are no-ops.
 
-**Why fan-out relay in goroutines rather than a queue?**
-Render free tier has no persistent worker process. An in-process goroutine fan-out is sufficient for the hackathon scope and keeps the deployment to a single binary. Failed deliveries are persisted to `relay_deliveries` and retried on the next sweep run, providing durability without a queue service.
+**Why in-process goroutine fan-out for relay instead of a queue?**
+Render free tier has no persistent worker process. An in-process goroutine fan-out is sufficient for the hackathon scope and keeps the deployment to a single binary. Failed deliveries are persisted to `relay_deliveries` and retryable via `POST /v1/webhook-deliveries/{id}/replays`.
