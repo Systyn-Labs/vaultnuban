@@ -1,7 +1,5 @@
 # VaultNUBAN
 
-[![CI](https://github.com/systynlabs/vaultnuban/actions/workflows/ci.yml/badge.svg)](https://github.com/systynlabs/vaultnuban/actions/workflows/ci.yml)
-
 Multi-tenant dedicated virtual account (DVA) infrastructure built on the [Nomba Virtual Accounts API](https://developer.nomba.com). Built for the **DevCareer × Nomba Hackathon — Infrastructure Track**.
 
 Each tenant onboards customers, provisions a unique 10-digit NUBAN for each one, and receives inbound transfers into a double-entry ledger — with webhook relay, withdrawals, collections, suspense management, KYC-tier enforcement, and sweep-based reconciliation.
