@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -204,10 +204,6 @@ type listTransactionsResponse struct {
 // nombaDateFormat is what the Nomba transaction list API expects — UTC with no timezone suffix.
 const nombaDateFormat = "2006-01-02T15:04:05"
 
-type filterTransactionRequest struct {
-	Type string `json:"type"`
-}
-
 func (a *Adapter) ListTransactions(ctx context.Context, req provider.ListTransactionsRequest) (*provider.TransactionPage, error) {
 	q := url.Values{}
 	q.Set("dateFrom", req.DateFrom.UTC().Format(nombaDateFormat))
@@ -219,24 +215,8 @@ func (a *Adapter) ListTransactions(ctx context.Context, req provider.ListTransac
 		q.Set("limit", fmt.Sprintf("%d", req.PageSize))
 	}
 
-	// When a sub-account is configured, use the POST filter endpoint with
-	// type=transfer so Nomba filters server-side. Without it, the sub-account
-	// returns all activity (POS, purchases, etc.) across hundreds of pages.
-	var (
-		method string
-		path   string
-		body   []byte
-	)
-	if a.subAccountID != "" {
-		method = http.MethodPost
-		path = "/v1/transactions/accounts/" + a.subAccountID
-		body, _ = json.Marshal(filterTransactionRequest{Type: "transfer"})
-	} else {
-		method = http.MethodGet
-		path = "/v1/transactions/accounts"
-	}
-
-	resp, err := a.client.authDo(ctx, method, path+"?"+q.Encode(), body)
+	path := "/v1/transactions/accounts/" + a.subAccountID
+	resp, err := a.client.authDo(ctx, http.MethodGet, path+"?"+q.Encode(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("nomba: list transactions: %w", err)
 	}
@@ -367,11 +347,48 @@ func (a *Adapter) ResolveAccount(ctx context.Context, bankCode, accountNumber st
 	}, nil
 }
 
+// ── Webhook types ─────────────────────────────────────────────────────────────
+
+type nombaWebhookPayload struct {
+	EventType string          `json:"event_type"`
+	RequestID string          `json:"requestId"`
+	Data      nombaWebhookData `json:"data"`
+}
+
+type nombaWebhookData struct {
+	Merchant    nombaWebhookMerchant    `json:"merchant"`
+	Transaction nombaWebhookTransaction `json:"transaction"`
+	Customer    nombaWebhookCustomer    `json:"customer"`
+}
+
+type nombaWebhookMerchant struct {
+	WalletID string `json:"walletId"`
+	UserID   string `json:"userId"`
+}
+
+type nombaWebhookTransaction struct {
+	TransactionID         string  `json:"transactionId"`
+	SessionID             string  `json:"sessionId"`
+	Type                  string  `json:"type"`
+	Time                  string  `json:"time"`
+	ResponseCode          string  `json:"responseCode"`
+	AliasAccountNumber    string  `json:"aliasAccountNumber"`
+	AliasAccountReference string  `json:"aliasAccountReference"`
+	AliasAccountName      string  `json:"aliasAccountName"`
+	TransactionAmount     float64 `json:"transactionAmount"`
+	Narration             string  `json:"narration"`
+}
+
+type nombaWebhookCustomer struct {
+	SenderName string `json:"senderName"`
+	BankName   string `json:"bankName"`
+}
+
 // ── Webhook signature ─────────────────────────────────────────────────────────
 
 // VerifyWebhookSignature implements FR-4.1.
-// Nomba signs with HMAC-SHA256 over a colon-joined field string that includes
-// the nomba-timestamp header. Comparison is constant-time.
+// Nomba signs: HMAC-SHA256(secret, "eventType:requestId:userId:walletId:transactionId:type:txTime:responseCode:nombaTimestamp")
+// encoded as base64. See https://developer.nomba.com/docs/api-basics/webhook
 func (a *Adapter) VerifyWebhookSignature(_ context.Context, headers map[string]string, body []byte) error {
 	sig := headers["nomba-signature"]
 	ts := headers["nomba-timestamp"]
@@ -379,12 +396,31 @@ func (a *Adapter) VerifyWebhookSignature(_ context.Context, headers map[string]s
 		return errors.New("missing nomba-signature or nomba-timestamp header")
 	}
 
-	// Nomba's signed string: timestamp + ":" + raw body
-	// (exact format confirmed from Nomba webhook docs; adjust if sandbox differs)
-	signed := ts + ":" + string(body)
+	var p nombaWebhookPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return fmt.Errorf("nomba: parse webhook body for signature: %w", err)
+	}
+
+	responseCode := p.Data.Transaction.ResponseCode
+	if responseCode == "null" {
+		responseCode = ""
+	}
+
+	hashingPayload := strings.Join([]string{
+		p.EventType,
+		p.RequestID,
+		p.Data.Merchant.UserID,
+		p.Data.Merchant.WalletID,
+		p.Data.Transaction.TransactionID,
+		p.Data.Transaction.Type,
+		p.Data.Transaction.Time,
+		responseCode,
+		ts,
+	}, ":")
+
 	mac := hmac.New(sha256.New, []byte(a.webhookSecret))
-	mac.Write([]byte(signed))
-	expected := hex.EncodeToString(mac.Sum(nil))
+	mac.Write([]byte(hashingPayload))
+	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
 	if !hmac.Equal([]byte(expected), []byte(sig)) {
 		return errors.New("webhook signature mismatch")
@@ -394,25 +430,30 @@ func (a *Adapter) VerifyWebhookSignature(_ context.Context, headers map[string]s
 
 // ── Webhook parsing ───────────────────────────────────────────────────────────
 
-type webhookPayload struct {
-	Event string           `json:"event"`
-	Data  nombaTransaction `json:"data"`
-}
-
 func (a *Adapter) ParseWebhook(_ context.Context, body []byte) (*provider.WebhookPayload, error) {
-	var p webhookPayload
+	var p nombaWebhookPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		return nil, fmt.Errorf("nomba: parse webhook: %w", err)
 	}
 
-	// Normalise event name to our canonical types
-	eventType := normaliseEventType(p.Event)
+	eventType := normaliseEventType(p.EventType)
 
-	pt, err := convertTransaction(p.Data)
-	if err != nil && p.Data.TransactionID != "" {
-		return nil, err
+	wt := p.Data.Transaction
+	occurredAt, _ := time.Parse(time.RFC3339, wt.Time)
+
+	pt := provider.ProviderTransaction{
+		TransactionID: wt.TransactionID,
+		SessionID:     wt.SessionID,
+		AccountNumber: wt.AliasAccountNumber,
+		AccountRef:    wt.AliasAccountReference,
+		AmountKobo:    int64(wt.TransactionAmount * 100),
+		Type:          wt.Type,
+		SenderName:    p.Data.Customer.SenderName,
+		SenderBank:    p.Data.Customer.BankName,
+		Narration:     wt.Narration,
+		OccurredAt:    occurredAt,
+		Raw:           body,
 	}
-	pt.Raw = body
 
 	return &provider.WebhookPayload{
 		EventType:   eventType,

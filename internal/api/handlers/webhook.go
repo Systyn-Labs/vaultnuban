@@ -111,14 +111,11 @@ func (h *WebhookHandler) HandleNombaWebhook(w http.ResponseWriter, r *http.Reque
 	})
 }
 
-// timestampAge parses a Unix-second string and returns its age in seconds.
+// timestampAge parses a Nomba ISO 8601 timestamp and returns its age in seconds.
 func timestampAge(ts string) int64 {
-	var unix int64
-	for _, c := range ts {
-		if c < '0' || c > '9' {
-			return 0
-		}
-		unix = unix*10 + int64(c-'0')
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return 0
 	}
-	return time.Now().Unix() - unix
+	return int64(time.Since(t).Seconds())
 }
