@@ -2,7 +2,6 @@
 package api
 
 import (
-	"html"
 	"net/http"
 	"strings"
 
@@ -196,8 +195,9 @@ func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
-// handleReadme serves the repo's README at the API root so visitors hitting
-// the bare domain see project docs instead of a 404.
+// handleReadme serves the repo's README at the API root, rendered as
+// GitHub-styled HTML, so visitors hitting the bare domain see project docs
+// instead of a 404. Sending `Accept: text/markdown` returns the raw source.
 func handleReadme(w http.ResponseWriter, r *http.Request) {
 	if strings.Contains(r.Header.Get("Accept"), "text/markdown") {
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
@@ -208,23 +208,83 @@ func handleReadme(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(`<!DOCTYPE html>
+	_, _ = w.Write([]byte(readmePageHead))
+	_, _ = w.Write([]byte(vaultnuban.ReadmeHTML()))
+	_, _ = w.Write([]byte(readmePageTail))
+}
+
+const readmePageHead = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>VaultNUBAN API</title>
 <style>
-  body { max-width: 860px; margin: 2rem auto; padding: 0 1.5rem; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.6; color: #1a1a1a; }
-  pre { white-space: pre-wrap; word-wrap: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9rem; }
+  :root {
+    color-scheme: light dark;
+    --fg: #1f2328; --bg: #ffffff; --muted: #59636e; --border: #d1d9e0;
+    --code-bg: #f6f8fa; --link: #0969da; --accent: #d4a72c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e6edf3; --bg: #0d1117; --muted: #8d96a0; --border: #30363d; --code-bg: #161b22; --link: #4493f8; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    max-width: 860px; margin: 0 auto; padding: 3rem 1.5rem 5rem;
+    background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.65; font-size: 16px;
+  }
+  .markdown-body h1, .markdown-body h2, .markdown-body h3, .markdown-body h4 {
+    font-weight: 600; line-height: 1.25; margin: 1.8em 0 0.8em;
+  }
+  .markdown-body h1 { font-size: 2rem; padding-bottom: 0.4em; border-bottom: 1px solid var(--border); }
+  .markdown-body h2 { font-size: 1.5rem; padding-bottom: 0.35em; border-bottom: 1px solid var(--border); }
+  .markdown-body h3 { font-size: 1.2rem; }
+  .markdown-body h1:first-child { margin-top: 0; }
+  .markdown-body p, .markdown-body ul, .markdown-body ol, .markdown-body blockquote, .markdown-body table { margin: 0.8em 0; }
+  .markdown-body ul, .markdown-body ol { padding-left: 1.8em; }
+  .markdown-body li + li { margin-top: 0.2em; }
+  .markdown-body a { color: var(--link); text-decoration: none; }
+  .markdown-body a:hover { text-decoration: underline; }
+  .markdown-body code {
+    background: var(--code-bg); border-radius: 4px; padding: 0.15em 0.4em;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88em;
+  }
+  .markdown-body pre {
+    background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1em; overflow-x: auto; line-height: 1.5;
+  }
+  .markdown-body pre code { background: none; padding: 0; font-size: 0.85em; }
+  .markdown-body blockquote {
+    border-left: 4px solid var(--border); margin-left: 0; padding: 0 1em; color: var(--muted);
+  }
+  .markdown-body table { border-collapse: collapse; display: block; overflow-x: auto; width: max-content; max-width: 100%; }
+  .markdown-body th, .markdown-body td { border: 1px solid var(--border); padding: 0.5em 0.9em; }
+  .markdown-body th { background: var(--code-bg); font-weight: 600; }
+  .markdown-body tr:nth-child(2n) { background: var(--code-bg); }
+  .markdown-body img { max-width: 100%; }
+  .markdown-body hr { border: none; border-top: 1px solid var(--border); margin: 2em 0; }
+  .readme-footer {
+    margin-top: 3em; padding-top: 1.5em; border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 0.85rem;
+  }
+  .readme-footer a { color: var(--link); text-decoration: none; }
+  .readme-footer a:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
-<pre>`))
-	_, _ = w.Write([]byte(html.EscapeString(vaultnuban.ReadmeMD)))
-	_, _ = w.Write([]byte(`</pre>
+<article class="markdown-body">
+`
+
+const readmePageTail = `
+</article>
+<p class="readme-footer">
+  Serving <code>README.md</code> from the running build &middot;
+  <a href="https://github.com/Systyn-Labs/vaultnuban">Source</a>
+</p>
 </body>
-</html>`))
-}
+</html>`
 
 func notImplemented(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
