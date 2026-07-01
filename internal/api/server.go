@@ -2,13 +2,16 @@
 package api
 
 import (
+	"html"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/redis/go-redis/v9"
 
+	vaultnuban "github.com/systynlabs/vaultnuban"
 	"github.com/systynlabs/vaultnuban/internal/api/handlers"
 	"github.com/systynlabs/vaultnuban/internal/api/middleware"
 	"github.com/systynlabs/vaultnuban/internal/config"
@@ -69,6 +72,7 @@ func NewRouter(deps Dependencies) http.Handler {
 
 	// Infra endpoints — no auth
 	r.Get("/healthz", handleHealthz)
+	r.Get("/", handleReadme)
 
 	// Human auth endpoints — no tenant auth
 	authH := handlers.NewAuthHandler(deps.AuthStore, deps.TenantStore, deps.SweepToken)
@@ -190,6 +194,36 @@ func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// handleReadme serves the repo's README at the API root so visitors hitting
+// the bare domain see project docs instead of a 404.
+func handleReadme(w http.ResponseWriter, r *http.Request) {
+	if strings.Contains(r.Header.Get("Accept"), "text/markdown") {
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(vaultnuban.ReadmeMD))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>VaultNUBAN API</title>
+<style>
+  body { max-width: 860px; margin: 2rem auto; padding: 0 1.5rem; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.6; color: #1a1a1a; }
+  pre { white-space: pre-wrap; word-wrap: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<pre>`))
+	_, _ = w.Write([]byte(html.EscapeString(vaultnuban.ReadmeMD)))
+	_, _ = w.Write([]byte(`</pre>
+</body>
+</html>`))
 }
 
 func notImplemented(w http.ResponseWriter, _ *http.Request) {
