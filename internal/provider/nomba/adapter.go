@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -37,7 +36,6 @@ func New(baseURL, clientID, clientSecret, accountID, subAccountID, webhookSecret
 type createVARequest struct {
 	AccountRef  string `json:"accountRef"`
 	AccountName string `json:"accountName"`
-	Currency    string `json:"currency"`
 	BVN         string `json:"bvn,omitempty"`
 }
 
@@ -56,7 +54,6 @@ func (a *Adapter) CreateVA(ctx context.Context, req provider.CreateVARequest) (*
 	body, _ := json.Marshal(createVARequest{
 		AccountRef:  req.AccountRef,
 		AccountName: req.AccountName,
-		Currency:    "NGN",
 		BVN:         req.BVN,
 	})
 
@@ -118,27 +115,30 @@ func (a *Adapter) SuspendVA(ctx context.Context, accountID string) error {
 
 // ── Virtual account listing ───────────────────────────────────────────────────
 
+// listVAsResponse maps POST /v1/accounts/virtual/list. Accounts arrive under
+// data.results; there is no status field — Nomba exposes an `expired` boolean.
 type listVAsResponse struct {
 	Code string `json:"code"`
 	Data struct {
-		Accounts []struct {
-			AccountRef      string `json:"accountRef"`
+		Results []struct {
+			AccountRef        string `json:"accountRef"`
 			BankAccountNumber string `json:"bankAccountNumber"`
-			BankName        string `json:"bankName"`
-			BankAccountName string `json:"bankAccountName"`
-			Status          string `json:"status"`
-			CreatedAt       string `json:"createdAt"`
-		} `json:"accounts"`
+			BankName          string `json:"bankName"`
+			BankAccountName   string `json:"bankAccountName"`
+			Expired           bool   `json:"expired"`
+			CreatedAt         string `json:"createdAt"`
+		} `json:"results"`
 		Cursor string `json:"cursor"`
 	} `json:"data"`
 }
 
 func (a *Adapter) ListVAs(ctx context.Context, cursor string) (*provider.VAPage, error) {
-	path := "/v1/accounts/virtual?limit=100"
+	path := "/v1/accounts/virtual/list?limit=100"
 	if cursor != "" {
 		path += "&cursor=" + url.QueryEscape(cursor)
 	}
-	resp, err := a.client.authDo(ctx, http.MethodGet, path, nil)
+	// Empty filter object: list everything.
+	resp, err := a.client.authDo(ctx, http.MethodPost, path, []byte("{}"))
 	if err != nil {
 		return nil, fmt.Errorf("nomba: list VAs: %w", err)
 	}
@@ -150,14 +150,18 @@ func (a *Adapter) ListVAs(ctx context.Context, cursor string) (*provider.VAPage,
 	}
 
 	page := &provider.VAPage{NextCursor: out.Data.Cursor}
-	for _, a := range out.Data.Accounts {
+	for _, r := range out.Data.Results {
+		status := "active"
+		if r.Expired {
+			status = "expired"
+		}
 		page.VAs = append(page.VAs, provider.NombaVA{
-			AccountRef:  a.AccountRef,
-			NUBAN:       a.BankAccountNumber,
-			BankName:    a.BankName,
-			AccountName: a.BankAccountName,
-			Status:      a.Status,
-			CreatedAt:   a.CreatedAt,
+			AccountRef:  r.AccountRef,
+			NUBAN:       r.BankAccountNumber,
+			BankName:    r.BankName,
+			AccountName: r.BankAccountName,
+			Status:      status,
+			CreatedAt:   r.CreatedAt,
 		})
 	}
 	return page, nil
@@ -165,49 +169,49 @@ func (a *Adapter) ListVAs(ctx context.Context, cursor string) (*provider.VAPage,
 
 // ── Transaction listing ───────────────────────────────────────────────────────
 
-// nombaListTransaction is the shape returned by GET /v1/transactions/accounts.
-// Most matching fields are absent; sessionId is included so the sweep can requery
-// each transaction to retrieve the full payload (accountRef, accountNumber, etc.).
-type nombaListTransaction struct {
-	TransactionID string `json:"id"`
-	SessionID     string `json:"sessionId"` // present when available; used for requery
-	Amount        string `json:"amount"`    // Nomba returns naira as a string
-	Type          string `json:"type"`
-	Status        string `json:"status"`
-	CreatedAt     string `json:"timeCreated"`
-}
-
-// nombaTransaction is the shape delivered inside webhook payloads and requery responses.
-// These carry the full set of fields needed for VA matching.
+// nombaTransaction is the shape returned by GET /v1/transactions/accounts/…,
+// GET /v1/transactions/virtual, and GET /v1/transactions/requery/{sessionId}
+// (verified against the live API 2026-07-01; richer than the OpenAPI spec).
+// It carries the VA matching fields the sweep needs (recipientAccountNumber,
+// sessionId, sender info). Amounts are naira; these endpoints return them as
+// JSON strings ("100.0") while other Nomba endpoints use numbers, so
+// json.Number covers both.
 type nombaTransaction struct {
-	TransactionID string `json:"transactionId"`
-	SessionID     string `json:"sessionId"`
-	AccountNumber string `json:"accountNumber"`
-	AccountRef    string `json:"accountRef"`
-	Amount        string `json:"amount"` // Nomba returns naira as a string
-	Type          string `json:"type"`
-	Status        string `json:"status"`
-	SenderName    string `json:"senderName"`
-	SenderBank    string `json:"senderBankName"`
-	Narration     string `json:"narration"`
-	CreatedAt     string `json:"createdAt"`
+	TransactionID string      `json:"id"`
+	SessionID     string      `json:"sessionId"`
+	Amount        json.Number `json:"amount"` // naira
+	Type          string      `json:"type"`   // e.g. "vact_transfer"
+	Status        string      `json:"status"`
+	TimeCreated   string      `json:"timeCreated"`
+	// VA matching fields
+	RecipientAccountNumber string `json:"recipientAccountNumber"` // the VA NUBAN credited
+	SenderName             string `json:"senderName"`
+	BankName               string `json:"bankName"` // sender's bank
+	Narration              string `json:"narration"`
+	EntryType              string `json:"entryType"` // CREDIT | DEBIT
 }
 
 type listTransactionsResponse struct {
 	Code string `json:"code"`
 	Data struct {
-		Transactions []nombaListTransaction `json:"results"` // Nomba uses "results" not "transactions"
-		Cursor       string                 `json:"cursor"`
+		Transactions []nombaTransaction `json:"results"`
+		Cursor       string             `json:"cursor"`
 	} `json:"data"`
 }
 
-// nombaDateFormat is what the Nomba transaction list API expects — UTC with no timezone suffix.
+// nombaDateFormat is the timestamp layout Nomba uses without a timezone suffix.
 const nombaDateFormat = "2006-01-02T15:04:05"
 
+// nombaDateOnly is what /v1/transactions/virtual expects for dateFrom/dateTo.
+const nombaDateOnly = "2006-01-02"
+
+// ListTransactions pages the account transactions API. When a sub-account is
+// configured it queries /v1/transactions/accounts/{subAccountId} — VAs created
+// under a sub-account only surface there, not on /v1/transactions/virtual
+// (verified against the live API). When VirtualAccount is set it uses the
+// per-VA /v1/transactions/virtual endpoint instead.
 func (a *Adapter) ListTransactions(ctx context.Context, req provider.ListTransactionsRequest) (*provider.TransactionPage, error) {
 	q := url.Values{}
-	q.Set("dateFrom", req.DateFrom.UTC().Format(nombaDateFormat))
-	q.Set("dateTo", req.DateTo.UTC().Format(nombaDateFormat))
 	if req.Cursor != "" {
 		q.Set("cursor", req.Cursor)
 	}
@@ -215,7 +219,21 @@ func (a *Adapter) ListTransactions(ctx context.Context, req provider.ListTransac
 		q.Set("limit", fmt.Sprintf("%d", req.PageSize))
 	}
 
-	path := "/v1/transactions/accounts/" + a.subAccountID
+	var path string
+	if req.VirtualAccount != "" {
+		path = "/v1/transactions/virtual"
+		q.Set("virtual_account", req.VirtualAccount)
+		q.Set("dateFrom", req.DateFrom.UTC().Format(nombaDateOnly))
+		q.Set("dateTo", req.DateTo.UTC().Format(nombaDateOnly))
+	} else {
+		path = "/v1/transactions/accounts"
+		if a.subAccountID != "" {
+			path += "/" + a.subAccountID
+		}
+		q.Set("dateFrom", req.DateFrom.UTC().Format(nombaDateFormat))
+		q.Set("dateTo", req.DateTo.UTC().Format(nombaDateFormat))
+	}
+
 	resp, err := a.client.authDo(ctx, http.MethodGet, path+"?"+q.Encode(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("nomba: list transactions: %w", err)
@@ -229,7 +247,13 @@ func (a *Adapter) ListTransactions(ctx context.Context, req provider.ListTransac
 
 	page := &provider.TransactionPage{NextCursor: out.Data.Cursor}
 	for _, t := range out.Data.Transactions {
-		pt, err := convertListTransaction(t)
+		// The accounts listing returns every transaction on the sub-account
+		// (outbound transfers, fees, etc.). Only virtual account credits form
+		// the ingest for this product; everything else is not ours to post.
+		if t.Type != "vact_transfer" {
+			continue
+		}
+		pt, err := convertTransaction(t)
 		if err != nil {
 			continue // skip malformed entries; sweep will retry on next window
 		}
@@ -273,13 +297,14 @@ type transferRequest struct {
 	Narration     string  `json:"narration,omitempty"`
 }
 
+// transferResponse maps BankAccountTransferResult: the transfer identifier is
+// data.id — Nomba does not return a transactionId or sessionId here.
 type transferResponse struct {
 	Code string `json:"code"`
 	Data struct {
-		TransactionID string `json:"transactionId"`
-		SessionID     string `json:"sessionId"`
-		Amount        string `json:"amount"`
-		Status        string `json:"status"`
+		ID     string `json:"id"`
+		Amount string `json:"amount"`
+		Status string `json:"status"` // SUCCESS | PENDING_BILLING
 	} `json:"data"`
 }
 
@@ -310,32 +335,38 @@ func (a *Adapter) Transfer(ctx context.Context, req provider.TransferRequest) (*
 	}
 
 	return &provider.TransferResponse{
-		TransactionID: out.Data.TransactionID,
-		SessionID:     out.Data.SessionID,
+		TransactionID: out.Data.ID,
 		Status:        out.Data.Status,
 	}, nil
 }
 
-type resolveAccountResponse struct {
+type lookupRequest struct {
+	AccountNumber string `json:"accountNumber"`
+	BankCode      string `json:"bankCode"`
+}
+
+// lookupResponse maps BankAccountLookupResult — only the account number and
+// name come back; the bank code is echoed from the request.
+type lookupResponse struct {
 	Code string `json:"code"`
 	Data struct {
 		AccountName   string `json:"accountName"`
 		AccountNumber string `json:"accountNumber"`
-		BankCode      string `json:"bankCode"`
 	} `json:"data"`
 }
 
 func (a *Adapter) ResolveAccount(ctx context.Context, bankCode, accountNumber string) (*provider.AccountResolution, error) {
-	q := url.Values{}
-	q.Set("bankCode", bankCode)
-	q.Set("accountNumber", accountNumber)
-	resp, err := a.client.authDo(ctx, http.MethodGet, "/v1/resolve/account?"+q.Encode(), nil)
+	body, _ := json.Marshal(lookupRequest{
+		AccountNumber: accountNumber,
+		BankCode:      bankCode,
+	})
+	resp, err := a.client.authDo(ctx, http.MethodPost, "/v1/transfers/bank/lookup", body)
 	if err != nil {
 		return nil, fmt.Errorf("nomba: resolve account: %w", err)
 	}
 	defer resp.Body.Close()
 
-	var out resolveAccountResponse
+	var out lookupResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("nomba: decode resolve account: %w", err)
 	}
@@ -343,7 +374,7 @@ func (a *Adapter) ResolveAccount(ctx context.Context, bankCode, accountNumber st
 	return &provider.AccountResolution{
 		AccountName:   out.Data.AccountName,
 		AccountNumber: out.Data.AccountNumber,
-		BankCode:      out.Data.BankCode,
+		BankCode:      bankCode,
 	}, nil
 }
 
@@ -464,53 +495,27 @@ func (a *Adapter) ParseWebhook(_ context.Context, body []byte) (*provider.Webhoo
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// convertListTransaction maps a nombaListTransaction (from the polling API) to a
-// ProviderTransaction. Matching fields (accountRef, accountNumber) are absent from
-// this API, but sessionId is forwarded so the sweep can requery each transaction
-// to retrieve the full payload before attempting to match.
-func convertListTransaction(t nombaListTransaction) (provider.ProviderTransaction, error) {
-	var occurredAt time.Time
-	if t.CreatedAt != "" {
-		var err error
-		occurredAt, err = time.Parse(nombaDateFormat, t.CreatedAt)
-		if err != nil {
-			occurredAt, err = time.Parse(time.RFC3339, t.CreatedAt)
-			if err != nil {
-				return provider.ProviderTransaction{}, fmt.Errorf("nomba: parse time %q: %w", t.CreatedAt, err)
-			}
-		}
+// parseNombaTime handles the timestamp variants Nomba emits (RFC3339 with or
+// without a timezone suffix).
+func parseNombaTime(s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
 	}
-	amountKobo, err := parseNairaString(t.Amount)
-	if err != nil {
-		return provider.ProviderTransaction{}, fmt.Errorf("nomba: parse amount %q: %w", t.Amount, err)
+	t, err := time.Parse(time.RFC3339, s)
+	if err == nil {
+		return t, nil
 	}
-	raw, _ := json.Marshal(t)
-	return provider.ProviderTransaction{
-		TransactionID: t.TransactionID,
-		SessionID:     t.SessionID, // forwarded for requery
-		AmountKobo:    amountKobo,
-		Type:          t.Type,
-		Status:        t.Status,
-		OccurredAt:    occurredAt,
-		Raw:           raw,
-	}, nil
+	return time.Parse(nombaDateFormat, s)
 }
 
+// convertTransaction maps a nombaTransaction (virtual account listing or
+// requery) to a ProviderTransaction.
 func convertTransaction(t nombaTransaction) (provider.ProviderTransaction, error) {
-	var occurredAt time.Time
-	if t.CreatedAt != "" {
-		var err error
-		occurredAt, err = time.Parse(time.RFC3339, t.CreatedAt)
-		if err != nil {
-			// Try without timezone suffix
-			occurredAt, err = time.Parse("2006-01-02T15:04:05", t.CreatedAt)
-			if err != nil {
-				return provider.ProviderTransaction{}, fmt.Errorf("nomba: parse time %q: %w", t.CreatedAt, err)
-			}
-		}
+	occurredAt, err := parseNombaTime(t.TimeCreated)
+	if err != nil {
+		return provider.ProviderTransaction{}, fmt.Errorf("nomba: parse time %q: %w", t.TimeCreated, err)
 	}
-
-	amountKobo, err := parseNairaString(t.Amount)
+	amountKobo, err := nairaToKobo(t.Amount)
 	if err != nil {
 		return provider.ProviderTransaction{}, fmt.Errorf("nomba: parse amount %q: %w", t.Amount, err)
 	}
@@ -518,30 +523,30 @@ func convertTransaction(t nombaTransaction) (provider.ProviderTransaction, error
 	return provider.ProviderTransaction{
 		TransactionID: t.TransactionID,
 		SessionID:     t.SessionID,
-		AccountNumber: t.AccountNumber,
-		AccountRef:    t.AccountRef,
+		AccountNumber: t.RecipientAccountNumber,
 		AmountKobo:    amountKobo,
 		Type:          t.Type,
 		Status:        t.Status,
 		SenderName:    t.SenderName,
-		SenderBank:    t.SenderBank,
+		SenderBank:    t.BankName,
 		Narration:     t.Narration,
 		OccurredAt:    occurredAt,
 		Raw:           raw,
 	}, nil
 }
 
-// parseNairaString converts a naira amount string (e.g. "1500.00") to kobo (int64).
-// Handles both integer and decimal representations.
-func parseNairaString(s string) (int64, error) {
-	if s == "" {
+// nairaToKobo converts a naira amount (string or number in the JSON — Nomba is
+// inconsistent across endpoints) to kobo, rounding to the nearest kobo to avoid
+// float truncation errors (e.g. 15.55 naira → 1555 kobo, not 1554).
+func nairaToKobo(n json.Number) (int64, error) {
+	if n == "" {
 		return 0, nil
 	}
-	f, err := strconv.ParseFloat(s, 64)
+	f, err := n.Float64()
 	if err != nil {
 		return 0, err
 	}
-	return int64(f * 100), nil
+	return int64(f*100 + 0.5), nil
 }
 
 func normaliseEventType(raw string) string {

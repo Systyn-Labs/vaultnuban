@@ -61,10 +61,11 @@ type VAResponse struct {
 }
 
 type ListTransactionsRequest struct {
-	DateFrom  time.Time
-	DateTo    time.Time
-	Cursor    string // opaque pagination cursor returned by Nomba
-	PageSize  int
+	DateFrom       time.Time
+	DateTo         time.Time
+	Cursor         string // opaque pagination cursor returned by Nomba
+	PageSize       int
+	VirtualAccount string // optional: restrict to one VA NUBAN
 }
 
 type TransactionPage struct {

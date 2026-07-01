@@ -96,11 +96,10 @@ func (s *SweepRunner) Run(ctx context.Context, overrideFrom ...time.Time) (*Swee
 		result.Found += len(page.Transactions)
 
 		for _, pt := range page.Transactions {
-			// FR-6.3: requery every transaction with a sessionId to get the full
-			// payload (accountRef, accountNumber, senderName) that the list API omits.
-			// Without requery the matcher has no identifier to match against and every
-			// sweep-caught transaction would land in suspense as "unmatched".
-			if pt.SessionID != "" {
+			// FR-6.3: the virtual-account listing already carries the matching
+			// fields (accountNumber, sender, narration); requery is only needed
+			// as a fallback when a transaction arrives without them.
+			if pt.AccountNumber == "" && pt.AccountRef == "" && pt.SessionID != "" {
 				requeried, err := s.prov.Requery(ctx, pt.SessionID)
 				if err != nil {
 					logger.Warnf(sweepCtx, "requery %s failed: %v", pt.SessionID, err)
