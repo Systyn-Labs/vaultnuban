@@ -6,15 +6,23 @@ info:
     Multi-tenant dedicated virtual account (DVA) infrastructure built on the Nomba Virtual Accounts API.
 
     ## Authentication
-    All `/v1/*` endpoints require a Bearer API key:
+    All `/v1/*` endpoints require a Bearer tenant API key:
     ```
     Authorization: Bearer <api_key>
     ```
+    `/internal/*` endpoints (except the cron sweep) require a Bearer operator token
+    (`INTERNAL_SWEEP_TOKEN`), issued out-of-band to platform operators — distinct
+    from tenant API keys.
 
     ## Idempotency
-    Mutating endpoints (`POST`, `PATCH`, `DELETE`) accept an optional
+    Mutating endpoints under `/v1/*` (`POST`, `PATCH`, `DELETE`) accept an optional
     `Idempotency-Key` header. Replaying the same key within 24 hours returns
     the cached response without re-executing the operation.
+
+    ## Pagination
+    List endpoints are cursor-paginated via an opaque `?cursor=` query parameter.
+    Responses return `{"data": [...], "next_cursor": "..."}`; `next_cursor` is
+    omitted once there are no further pages.
 
     ## Error format
     All errors follow [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)
@@ -37,18 +45,28 @@ servers:
 tags:
   - name: Health
     description: Infrastructure health check
+  - name: Auth
+    description: Human login and tenant/admin onboarding
   - name: Customers
     description: Customer onboarding and KYC tier management
   - name: Virtual Accounts
     description: NUBAN provisioning and lifecycle
   - name: Transactions
-    description: Transaction history and account statements
+    description: Transaction history, statements, and balances
+  - name: Withdrawals
+    description: Outbound transfers to external bank accounts
+  - name: Collections
+    description: Dynamic payment requests linked to a customer's virtual account
   - name: Suspense
     description: Unmatched or limit-breached payments pending manual resolution
   - name: Webhooks
-    description: Nomba payment event ingestor
+    description: Nomba payment event ingestor and tenant relay endpoint management
+  - name: Audit
+    description: Immutable audit log of tenant-scoped actions
+  - name: API Keys
+    description: Tenant self-service API key management
   - name: Internal
-    description: Cron-triggered reconciliation sweep (internal use)
+    description: Operator-only endpoints protected by INTERNAL_SWEEP_TOKEN
 
 # ── Security ──────────────────────────────────────────────────────────────────
 
@@ -61,6 +79,10 @@ components:
       type: http
       scheme: bearer
       description: Tenant API key issued during onboarding
+    OperatorAuth:
+      type: http
+      scheme: bearer
+      description: Platform operator token (INTERNAL_SWEEP_TOKEN)
 
   # ── Reusable schemas ─────────────────────────────────────────────────────────
 
@@ -177,6 +199,15 @@ components:
           type: string
           format: date-time
 
+    VirtualAccountListItem:
+      allOf:
+        - $ref: '#/components/schemas/VirtualAccount'
+        - type: object
+          properties:
+            customer_display_name:
+              type: string
+              example: "Amaka Obi"
+
     # ── Transaction ───────────────────────────────────────────────────────────
 
     Transaction:
@@ -187,6 +218,12 @@ components:
           type: string
           description: Nomba transactionId (primary key)
           example: "NMB20240610001"
+        nuban:
+          type: string
+          example: "2038571294"
+        session_id:
+          type: string
+          nullable: true
         amount_kobo:
           type: integer
           format: int64
@@ -200,7 +237,7 @@ components:
           enum: [credit, debit]
         source:
           type: string
-          enum: [webhook, sweep, internal]
+          enum: [webhook, sweep]
         status:
           type: string
           enum: [posted, reversed, pending]
@@ -220,7 +257,7 @@ components:
           type: string
           format: date-time
 
-    # ── Statement entry ───────────────────────────────────────────────────────
+    # ── Statement / balance ───────────────────────────────────────────────────
 
     StatementEntry:
       type: object
@@ -249,11 +286,156 @@ components:
           type: string
           example: "5000.00"
 
+    Statement:
+      type: object
+      properties:
+        customer_id:
+          type: string
+          format: uuid
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        opening_balance_kobo:
+          type: integer
+          format: int64
+          example: 0
+        opening_balance_ngn:
+          type: string
+          example: "0.00"
+        closing_balance_kobo:
+          type: integer
+          format: int64
+          example: 500000
+        closing_balance_ngn:
+          type: string
+          example: "5000.00"
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/StatementEntry'
+
+    Balance:
+      type: object
+      properties:
+        customer_id:
+          type: string
+          format: uuid
+        balance_kobo:
+          type: integer
+          format: int64
+          example: 500000
+        balance_ngn:
+          type: string
+          example: "5000.00"
+        kyc_tier:
+          type: integer
+          example: 2
+        computed_at:
+          type: string
+          format: date-time
+
+    # ── Withdrawals ───────────────────────────────────────────────────────────
+
+    Withdrawal:
+      type: object
+      required: [id, customer_id, amount_kobo, destination_bank_code, destination_account_number, destination_account_name, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+          format: uuid
+        amount_kobo:
+          type: integer
+          format: int64
+          example: 250000
+        destination_bank_code:
+          type: string
+          example: "058"
+        destination_account_number:
+          type: string
+          example: "0123456789"
+        destination_account_name:
+          type: string
+          example: "Chidi Okeke"
+        narration:
+          type: string
+          example: "Withdrawal to GTBank"
+        status:
+          type: string
+          enum: [pending, processing, completed, failed]
+        provider_transaction_id:
+          type: string
+        failure_reason:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    PayeeResolution:
+      type: object
+      properties:
+        account_name:
+          type: string
+          example: "Chidi Okeke"
+        account_number:
+          type: string
+          example: "0123456789"
+        bank_code:
+          type: string
+          example: "058"
+
+    # ── Collections ───────────────────────────────────────────────────────────
+
+    Collection:
+      type: object
+      required: [id, customer_id, reference, description, status, nuban, bank_name, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        customer_id:
+          type: string
+          format: uuid
+        reference:
+          type: string
+          example: "invoice-1042"
+        description:
+          type: string
+          example: "Order #1042"
+        status:
+          type: string
+          enum: [open, fulfilled, expired, cancelled]
+        nuban:
+          type: string
+          example: "2038571294"
+        bank_name:
+          type: string
+          example: "Nomba Microfinance Bank"
+        expected_amount_kobo:
+          type: integer
+          format: int64
+        expires_at:
+          type: string
+          format: date-time
+        fulfilled_by_txn_id:
+          type: string
+        fulfilled_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
     # ── Suspense item ─────────────────────────────────────────────────────────
 
     SuspenseItem:
       type: object
-      required: [id, transaction_id, reason, status, created_at]
+      required: [id, transaction_id, reason, status, created_at, amount_kobo]
       properties:
         id:
           type: string
@@ -273,9 +455,121 @@ components:
         resolved_by:
           type: string
           nullable: true
+        amount_kobo:
+          type: integer
+          format: int64
+        nuban:
+          type: string
         created_at:
           type: string
           format: date-time
+
+    # ── Webhook relay ─────────────────────────────────────────────────────────
+
+    WebhookEndpoint:
+      type: object
+      required: [id, url, active, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+          example: "https://example.com/vaultnuban/webhook"
+        active:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    WebhookDelivery:
+      type: object
+      required: [id, endpoint_id, event_type, attempt, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        endpoint_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+          example: "transfer.received"
+        attempt:
+          type: integer
+        status:
+          type: string
+          enum: [pending, delivered, failed, dead_letter]
+        status_code:
+          type: integer
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        next_retry_at:
+          type: string
+          format: date-time
+          nullable: true
+        delivered_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+
+    # ── Audit ─────────────────────────────────────────────────────────────────
+
+    AuditEntry:
+      type: object
+      required: [id, actor, action, entity_type, entity_id, at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        actor:
+          type: string
+          description: "`key:<prefix>` for API-key-initiated actions, or `system`"
+          example: "key:sk_live_abc1"
+        action:
+          type: string
+          example: "customer.kyc_tier_updated"
+        entity_type:
+          type: string
+          example: "customer"
+        entity_id:
+          type: string
+          format: uuid
+        at:
+          type: string
+          format: date-time
+
+    # ── API Keys ──────────────────────────────────────────────────────────────
+
+    APIKey:
+      type: object
+      required: [id, prefix, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        prefix:
+          type: string
+          example: "sk_live_abc1"
+        created_at:
+          type: string
+          format: date-time
+
+    APIKeyCreated:
+      allOf:
+        - $ref: '#/components/schemas/APIKey'
+        - type: object
+          properties:
+            api_key:
+              type: string
+              description: Raw API key — shown exactly once, at creation time
+              example: "sk_live_{32-char-hex-raw-key-shown-once}"
 
     # ── Sweep result ──────────────────────────────────────────────────────────
 
@@ -302,7 +596,29 @@ components:
           type: integer
           format: int64
 
-    # ── Cursor pagination wrapper ─────────────────────────────────────────────
+    # ── Cursor pagination wrappers ─────────────────────────────────────────────
+
+    PaginatedCustomers:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Customer'
+        next_cursor:
+          type: string
+          nullable: true
+
+    PaginatedVirtualAccounts:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/VirtualAccountListItem'
+        next_cursor:
+          type: string
+          nullable: true
 
     PaginatedTransactions:
       type: object
@@ -315,6 +631,28 @@ components:
           type: string
           nullable: true
 
+    PaginatedWithdrawals:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Withdrawal'
+        next_cursor:
+          type: string
+          nullable: true
+
+    PaginatedCollections:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Collection'
+        next_cursor:
+          type: string
+          nullable: true
+
     PaginatedSuspenseItems:
       type: object
       properties:
@@ -322,6 +660,28 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SuspenseItem'
+        next_cursor:
+          type: string
+          nullable: true
+
+    PaginatedWebhookDeliveries:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/WebhookDelivery'
+        next_cursor:
+          type: string
+          nullable: true
+
+    PaginatedAuditEntries:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEntry'
         next_cursor:
           type: string
           nullable: true
@@ -347,6 +707,41 @@ components:
         type: string
         format: uuid
       description: Suspense item UUID
+
+    KeyID:
+      name: keyID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: API key UUID
+
+    CollectionID:
+      name: collectionID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Collection UUID
+
+    DeliveryID:
+      name: deliveryID
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Webhook delivery UUID
+
+    TransactionID:
+      name: transactionID
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Nomba transaction ID
 
     LimitParam:
       name: limit
@@ -405,6 +800,13 @@ components:
           schema:
             $ref: '#/components/schemas/Problem'
 
+    BadRequest:
+      description: Malformed request body or query parameters
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
     InternalServerError:
       description: Unexpected server error
       content:
@@ -436,15 +838,96 @@ paths:
                     type: string
                     example: "ok"
 
+  # ── Auth ────────────────────────────────────────────────────────────────────
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Human login
+      description: |
+        Validates email + password and returns the caller's tenant API key
+        (used as the Bearer token for all `/v1/*` calls). Admin users also
+        receive the operator token for `/internal/*` calls.
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  format: password
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  name:
+                    type: string
+                  email:
+                    type: string
+                    format: email
+                  role:
+                    type: string
+                    enum: [dev, ops, admin]
+                  tenant_id:
+                    type: string
+                    format: uuid
+                  tenant_name:
+                    type: string
+                  api_key:
+                    type: string
+                    description: Present when the account belongs to a tenant
+                  key_prefix:
+                    type: string
+                  admin_token:
+                    type: string
+                    description: "Present only for `role: admin` — the operator token for `/internal/*`"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
   # ── Customers ───────────────────────────────────────────────────────────────
 
   /v1/customers:
+    get:
+      tags: [Customers]
+      summary: List customers
+      description: Returns all customers for the authenticated tenant, newest first.
+      operationId: listCustomers
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        "200":
+          description: Paginated list of customers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCustomers'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
     post:
       tags: [Customers]
-      summary: Create or retrieve a customer
+      summary: Create a customer
       description: |
-        Idempotent by `external_ref` within the tenant. Returns `201` on first
-        creation and `200` if the customer already exists.
+        Creates a new customer and their identity record.
       operationId: createCustomer
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -470,7 +953,6 @@ paths:
                     bvn_masked:
                       type: string
                       nullable: true
-                      description: Last 4+ digits masked — at least one of bvn_masked or nin_masked required
                       example: "****78901"
                     nin_masked:
                       type: string
@@ -487,14 +969,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Customer'
-        "200":
-          description: Customer already exists (idempotent)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/Customer'
         "400":
-          $ref: '#/components/responses/UnprocessableEntity'
+          $ref: '#/components/responses/BadRequest'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "422":
@@ -505,9 +981,9 @@ paths:
   /v1/customers/{customerID}/identity:
     patch:
       tags: [Customers]
-      summary: Upgrade KYC tier
+      summary: Update KYC tier
       description: |
-        Updates the customer's KYC tier. Tier must be 1, 2, or 3.
+        Updates the customer's KYC tier. Limits are re-evaluated immediately.
         Tier changes are audit-logged.
       operationId: updateKYCTier
       parameters:
@@ -533,7 +1009,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Customer'
         "400":
-          $ref: '#/components/responses/UnprocessableEntity'
+          $ref: '#/components/responses/BadRequest'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "404":
@@ -545,13 +1021,33 @@ paths:
 
   # ── Virtual Accounts ─────────────────────────────────────────────────────────
 
+  /v1/virtual-accounts:
+    get:
+      tags: [Virtual Accounts]
+      summary: List all virtual accounts
+      description: Paginated list of all virtual accounts across every customer for the authenticated tenant.
+      operationId: listVirtualAccounts
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        "200":
+          description: Paginated list of virtual accounts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedVirtualAccounts'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
   /v1/customers/{customerID}/virtual-account:
     post:
       tags: [Virtual Accounts]
       summary: Provision a NUBAN virtual account
       description: |
         Creates a Nomba virtual account for the customer and returns the NUBAN.
-        Idempotent — returns the existing account if one is already ACTIVE.
+        Idempotent — returns the existing account if one is already active.
         Returns `201` on creation, `200` on idempotent re-provision.
       operationId: provisionVirtualAccount
       parameters:
@@ -565,7 +1061,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/VirtualAccount'
         "200":
-          description: Existing active account returned
+          description: Existing account returned
           content:
             application/json:
               schema:
@@ -580,6 +1076,7 @@ paths:
     get:
       tags: [Virtual Accounts]
       summary: Get the customer's virtual account
+      description: Retrieve the active virtual account for a customer.
       operationId: getVirtualAccount
       parameters:
         - $ref: '#/components/parameters/CustomerID'
@@ -599,12 +1096,12 @@ paths:
 
     patch:
       tags: [Virtual Accounts]
-      summary: Rename, suspend, or unsuspend a virtual account
+      summary: Rename, suspend, or restore a virtual account
       description: |
         Send **one** of:
-        - `{ "account_name": "New Name" }` — renames the account
-        - `{ "action": "suspend" }` — suspends the account (new credits go to suspense)
-        - `{ "action": "unsuspend" }` — restores an active state
+        - `{ "account_name": "New Name" }` — renames the account. Responds `200` with the updated account.
+        - `{ "status": "SUSPENDED" }` — suspends the account; new inbound credits route to suspense. Responds `204`.
+        - `{ "status": "ACTIVE" }` — restores a suspended account. Responds `204`.
       operationId: patchVirtualAccount
       parameters:
         - $ref: '#/components/parameters/CustomerID'
@@ -619,20 +1116,24 @@ paths:
                 account_name:
                   type: string
                   example: "Chidi Okeke"
-                action:
+                status:
                   type: string
-                  enum: [suspend, unsuspend]
+                  enum: [SUSPENDED, ACTIVE]
       responses:
         "200":
-          description: Account renamed (only returned for rename operations)
+          description: Account renamed (only returned for the `account_name` operation)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/VirtualAccount'
         "204":
-          description: Suspend / unsuspend applied
+          description: Status change applied (suspend / restore)
         "400":
-          $ref: '#/components/responses/UnprocessableEntity'
+          description: Body contained neither `account_name` nor a valid `status`
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "404":
@@ -646,9 +1147,9 @@ paths:
       tags: [Virtual Accounts]
       summary: Close a virtual account permanently
       description: |
-        Closes the virtual account. This transition is **irreversible**.
-        Subsequent inbound credits to the NUBAN will be routed to the suspense
-        ledger with reason `closed_account`.
+        Closes the virtual account. `CLOSED` is a terminal, irreversible state.
+        Subsequent inbound credits to the NUBAN route to suspense with reason
+        `closed_account`.
       operationId: closeVirtualAccount
       parameters:
         - $ref: '#/components/parameters/CustomerID'
@@ -667,14 +1168,56 @@ paths:
 
   # ── Transactions ─────────────────────────────────────────────────────────────
 
+  /v1/transactions:
+    get:
+      tags: [Transactions]
+      summary: List all transactions
+      description: Paginated list of all inbound transfers across every customer for the tenant, newest first.
+      operationId: listTenantTransactions
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        "200":
+          description: Paginated list of transactions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedTransactions'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/transactions/{transactionID}:
+    get:
+      tags: [Transactions]
+      summary: Get a single transaction
+      description: Retrieve a single transfer by its Nomba transaction ID, scoped to the authenticated tenant.
+      operationId: getTransaction
+      parameters:
+        - $ref: '#/components/parameters/TransactionID'
+      responses:
+        "200":
+          description: Transaction
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
   /v1/customers/{customerID}/transactions:
     get:
       tags: [Transactions]
       summary: List transactions for a customer
       description: |
-        Returns the customer's inbound and outbound transactions in reverse
-        chronological order. Paginated via opaque cursor.
-      operationId: listTransactions
+        Returns the customer's inbound transfers in reverse chronological
+        order. Paginated via opaque cursor.
+      operationId: listCustomerTransactions
       parameters:
         - $ref: '#/components/parameters/CustomerID'
         - $ref: '#/components/parameters/LimitParam'
@@ -698,9 +1241,9 @@ paths:
       tags: [Transactions]
       summary: Generate an account statement
       description: |
-        Returns opening balance, closing balance, and a running-balance ledger for
-        the specified date window. Both `from` and `to` are required RFC3339
-        timestamps.
+        Returns opening balance, closing balance, and a running-balance ledger
+        for the specified date window. Both `from` and `to` are required
+        RFC3339 timestamps.
       operationId: getStatement
       parameters:
         - $ref: '#/components/parameters/CustomerID'
@@ -724,41 +1267,265 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  customer_id:
-                    type: string
-                    format: uuid
-                  from:
-                    type: string
-                    format: date-time
-                  to:
-                    type: string
-                    format: date-time
-                  opening_balance_kobo:
-                    type: integer
-                    format: int64
-                    example: 0
-                  opening_balance_ngn:
-                    type: string
-                    example: "0.00"
-                  closing_balance_kobo:
-                    type: integer
-                    format: int64
-                    example: 500000
-                  closing_balance_ngn:
-                    type: string
-                    example: "5000.00"
-                  entries:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/StatementEntry'
+                $ref: '#/components/schemas/Statement'
         "400":
-          $ref: '#/components/responses/UnprocessableEntity'
+          $ref: '#/components/responses/BadRequest'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "404":
           $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/customers/{customerID}/balance:
+    get:
+      tags: [Transactions]
+      summary: Get current balance
+      description: Returns the current balance computed from all posted ledger entries for the customer.
+      operationId: getBalance
+      parameters:
+        - $ref: '#/components/parameters/CustomerID'
+      responses:
+        "200":
+          description: Current balance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Balance'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ── Withdrawals ───────────────────────────────────────────────────────────────
+
+  /v1/payees/resolve:
+    get:
+      tags: [Withdrawals]
+      summary: Resolve a payee account name
+      description: Look up the account name for a bank account number before initiating a withdrawal.
+      operationId: resolvePayee
+      parameters:
+        - name: bank_code
+          in: query
+          required: true
+          schema:
+            type: string
+          example: "058"
+        - name: account_number
+          in: query
+          required: true
+          schema:
+            type: string
+          example: "0123456789"
+      responses:
+        "200":
+          description: Resolved payee
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayeeResolution'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/customers/{customerID}/withdrawals:
+    post:
+      tags: [Withdrawals]
+      summary: Initiate a withdrawal
+      description: Debit the customer's wallet and transfer funds to an external bank account.
+      operationId: initiateWithdrawal
+      parameters:
+        - $ref: '#/components/parameters/CustomerID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount_kobo, destination_bank_code, destination_account_number, destination_account_name]
+              properties:
+                amount_kobo:
+                  type: integer
+                  format: int64
+                  example: 250000
+                destination_bank_code:
+                  type: string
+                  example: "058"
+                destination_account_number:
+                  type: string
+                  example: "0123456789"
+                destination_account_name:
+                  type: string
+                  example: "Chidi Okeke"
+                narration:
+                  type: string
+                  example: "Withdrawal to GTBank"
+      responses:
+        "201":
+          description: Withdrawal initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Withdrawal'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    get:
+      tags: [Withdrawals]
+      summary: List withdrawals for a customer
+      description: Paginated list of withdrawal records for a customer, newest first.
+      operationId: listWithdrawals
+      parameters:
+        - $ref: '#/components/parameters/CustomerID'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        "200":
+          description: Paginated list of withdrawals
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWithdrawals'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ── Collections ───────────────────────────────────────────────────────────────
+
+  /v1/customers/{customerID}/collections:
+    post:
+      tags: [Collections]
+      summary: Create a collection
+      description: Create a payment request linked to the customer's active virtual account.
+      operationId: createCollection
+      parameters:
+        - $ref: '#/components/parameters/CustomerID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                expected_amount_kobo:
+                  type: integer
+                  format: int64
+                  nullable: true
+                  example: 500000
+                reference:
+                  type: string
+                  example: "invoice-1042"
+                description:
+                  type: string
+                  example: "Order #1042"
+                expires_in_seconds:
+                  type: integer
+                  example: 3600
+      responses:
+        "201":
+          description: Collection created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    get:
+      tags: [Collections]
+      summary: List collections for a customer
+      description: Paginated list of payment collections for a customer, newest first.
+      operationId: listCollections
+      parameters:
+        - $ref: '#/components/parameters/CustomerID'
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        "200":
+          description: Paginated list of collections
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCollections'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/customers/{customerID}/collections/{collectionID}:
+    get:
+      tags: [Collections]
+      summary: Get a collection
+      description: Retrieve a single collection by ID.
+      operationId: getCollection
+      parameters:
+        - $ref: '#/components/parameters/CustomerID'
+        - $ref: '#/components/parameters/CollectionID'
+      responses:
+        "200":
+          description: Collection
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Collection'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    delete:
+      tags: [Collections]
+      summary: Cancel a collection
+      description: Cancel an open collection. Has no effect on any funds already received.
+      operationId: cancelCollection
+      parameters:
+        - $ref: '#/components/parameters/CustomerID'
+        - $ref: '#/components/parameters/CollectionID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        "200":
+          description: Collection cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "cancelled"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
         "500":
           $ref: '#/components/responses/InternalServerError'
 
@@ -769,8 +1536,8 @@ paths:
       tags: [Suspense]
       summary: List open suspense items
       description: |
-        Returns all unresolved suspense items for the tenant, newest first.
-        Only items with `status = open` are returned.
+        Returns unresolved suspense items for the tenant with their reason
+        codes, newest first.
       operationId: listSuspenseItems
       parameters:
         - $ref: '#/components/parameters/LimitParam'
@@ -787,8 +1554,8 @@ paths:
         "500":
           $ref: '#/components/responses/InternalServerError'
 
-  /v1/suspense/{itemID}/resolve:
-    post:
+  /v1/suspense/{itemID}:
+    patch:
       tags: [Suspense]
       summary: Resolve a suspense item
       description: |
@@ -834,7 +1601,7 @@ paths:
                     type: string
                     example: "resolved"
         "400":
-          $ref: '#/components/responses/UnprocessableEntity'
+          $ref: '#/components/responses/BadRequest'
         "401":
           $ref: '#/components/responses/Unauthorized'
         "404":
@@ -844,7 +1611,104 @@ paths:
         "500":
           $ref: '#/components/responses/InternalServerError'
 
-  # ── Webhooks ─────────────────────────────────────────────────────────────────
+  # ── Webhook relay (tenant-managed outbound relay) ──────────────────────────────
+
+  /v1/webhook-endpoints:
+    post:
+      tags: [Webhooks]
+      summary: Register a relay endpoint
+      description: Register a URL to receive relayed VaultNUBAN events.
+      operationId: createWebhookEndpoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, secret]
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  example: "https://example.com/vaultnuban/webhook"
+                secret:
+                  type: string
+                  description: Shared secret used to HMAC-sign relayed payloads (min 16 chars recommended)
+      responses:
+        "201":
+          description: Endpoint registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookEndpoint'
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    get:
+      tags: [Webhooks]
+      summary: List registered relay endpoints
+      description: List all registered relay endpoints for the authenticated tenant.
+      operationId: listWebhookEndpoints
+      responses:
+        "200":
+          description: Registered endpoints
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WebhookEndpoint'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/webhook-deliveries:
+    get:
+      tags: [Webhooks]
+      summary: List delivery attempts
+      description: List all relay delivery attempts for the tenant, newest first.
+      operationId: listWebhookDeliveries
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        "200":
+          description: Paginated delivery attempts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWebhookDeliveries'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/webhook-deliveries/{deliveryID}/replays:
+    post:
+      tags: [Webhooks]
+      summary: Replay a delivery
+      description: Immediately re-dispatch a failed or dead-letter delivery to its endpoint.
+      operationId: replayWebhookDelivery
+      parameters:
+        - $ref: '#/components/parameters/DeliveryID'
+      responses:
+        "202":
+          description: Replay accepted
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "404":
+          $ref: '#/components/responses/NotFound'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
 
   /webhooks/nomba:
     post:
@@ -852,11 +1716,10 @@ paths:
       summary: Nomba payment event ingestor
       description: |
         Receives payment events from Nomba. Signature is verified via HMAC-SHA256
-        (`nomba-signature` header). Events older than 5 minutes are rejected.
+        (`nomba-signature` header); events older than 5 minutes are rejected.
 
-        Must respond `200` within 5 seconds; all processing is asynchronous.
-        Duplicate deliveries (same transactionId + event type) are silently
-        de-duplicated.
+        Responds `200` immediately; all processing is asynchronous. Duplicate
+        deliveries (same transactionId + event type) are silently de-duplicated.
       operationId: handleNombaWebhook
       security: []
       parameters:
@@ -891,7 +1754,7 @@ paths:
               description: Nomba webhook payload (structure defined by Nomba)
       responses:
         "200":
-          description: Event acknowledged (processing is async)
+          description: Event acknowledged (processing is async, including on parse failure or duplicate)
         "401":
           description: Invalid or stale signature
           content:
@@ -899,7 +1762,87 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
 
-  # ── Internal ──────────────────────────────────────────────────────────────────
+  # ── Audit ─────────────────────────────────────────────────────────────────────
+
+  /v1/audit:
+    get:
+      tags: [Audit]
+      summary: List audit entries
+      description: Paginated list of audit events for the authenticated tenant, newest first.
+      operationId: listAuditEntries
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        "200":
+          description: Paginated audit entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedAuditEntries'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ── API Keys ──────────────────────────────────────────────────────────────────
+
+  /v1/api-keys:
+    get:
+      tags: [API Keys]
+      summary: List API keys
+      description: List all active API keys for the authenticated tenant. Only active (non-revoked) keys are returned; the full key value is never exposed after initial creation.
+      operationId: listAPIKeys
+      responses:
+        "200":
+          description: Active API keys
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/APIKey'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    post:
+      tags: [API Keys]
+      summary: Create an API key
+      description: Generate a new API key for the tenant. The raw key is shown exactly once.
+      operationId: createAPIKey
+      responses:
+        "201":
+          description: API key created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/APIKeyCreated'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /v1/api-keys/{keyID}:
+    delete:
+      tags: [API Keys]
+      summary: Revoke an API key
+      description: Permanently revoke an API key. Any service using it loses access immediately.
+      operationId: revokeAPIKey
+      parameters:
+        - $ref: '#/components/parameters/KeyID'
+      responses:
+        "204":
+          description: Key revoked
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  # ── Internal / Operator API ─────────────────────────────────────────────────────
 
   /internal/sweep:
     get:
@@ -908,13 +1851,21 @@ paths:
       description: |
         Pages the Nomba Transactions API and posts any credits missed by the
         webhook ingestor. Authenticated via the `Authorization: Bearer <INTERNAL_SWEEP_TOKEN>`
-        header (distinct from tenant API keys).
+        header (distinct from tenant API keys and from `OperatorAuth`).
 
         Safe to call multiple times — duplicate transactionIds are skipped.
         Intended to be called by a cron job (e.g. UptimeRobot HTTP monitor).
+        Also accepts `HEAD` for lightweight uptime checks.
       operationId: triggerSweep
       security:
-        - BearerAuth: []
+        - OperatorAuth: []
+      parameters:
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Optional RFC3339 override to backfill from a specific window start
       responses:
         "200":
           description: Sweep complete — summary returned even on partial error
@@ -922,7 +1873,481 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SweepResult'
+        "400":
+          $ref: '#/components/responses/BadRequest'
         "401":
           $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+    head:
+      tags: [Internal]
+      summary: Trigger reconciliation sweep (uptime-check form)
+      operationId: triggerSweepHead
+      security:
+        - OperatorAuth: []
+      responses:
+        "200":
+          description: Sweep triggered
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+
+  /internal/tenants:
+    post:
+      tags: [Internal]
+      summary: Onboard a tenant
+      description: Create a new tenant with its initial set of users and a shared API key.
+      operationId: onboardTenant
+      security:
+        - OperatorAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_name, users]
+              properties:
+                tenant_name:
+                  type: string
+                users:
+                  type: array
+                  items:
+                    type: object
+                    required: [name, email, password, role]
+                    properties:
+                      name:
+                        type: string
+                      email:
+                        type: string
+                        format: email
+                      password:
+                        type: string
+                        format: password
+                      role:
+                        type: string
+                        enum: [dev, ops]
+      responses:
+        "201":
+          description: Tenant created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tenant_id:
+                    type: string
+                    format: uuid
+                  tenant_name:
+                    type: string
+                  api_key:
+                    type: string
+                    description: Raw tenant API key — shown once
+                  key_prefix:
+                    type: string
+                  users_created:
+                    type: integer
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    get:
+      tags: [Internal]
+      summary: List tenants
+      description: Return all tenants registered on the platform.
+      operationId: listTenants
+      security:
+        - OperatorAuth: []
+      responses:
+        "200":
+          description: Tenants
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        name:
+                          type: string
+                        created_at:
+                          type: string
+                          format: date-time
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /internal/admins:
+    post:
+      tags: [Internal]
+      summary: Onboard a platform admin
+      description: Create a new platform admin user (no tenant association).
+      operationId: onboardAdmin
+      security:
+        - OperatorAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password]
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  format: password
+      responses:
+        "201":
+          description: Admin created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  email:
+                    type: string
+                    format: email
+                  role:
+                    type: string
+                    example: "admin"
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /internal/health:
+    get:
+      tags: [Internal]
+      summary: Platform-wide reconciliation snapshot
+      description: Ledger invariant, sweep status, webhook delivery rate, cross-tenant suspense, and per-tenant health.
+      operationId: getPlatformHealth
+      security:
+        - OperatorAuth: []
+      responses:
+        "200":
+          description: Platform health snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Aggregate platform health object (ledger balance, last sweep, 24h webhook rate, cross-tenant suspense, per-tenant health, checked_at)
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /internal/sweep-runs:
+    get:
+      tags: [Internal]
+      summary: List reconciliation sweep runs
+      description: Return the most recent reconciliation sweep run logs, newest first.
+      operationId: listSweepRuns
+      security:
+        - OperatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        "200":
+          description: Sweep run logs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/SweepResult'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /internal/suspense:
+    get:
+      tags: [Internal]
+      summary: List cross-tenant suspense items
+      description: Paginated list of all open suspense items across every tenant.
+      operationId: listCrossTenantSuspense
+      security:
+        - OperatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        "200":
+          description: Cross-tenant suspense items
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        tenant_name:
+                          type: string
+                        amount_kobo:
+                          type: integer
+                          format: int64
+                        reason:
+                          type: string
+                        nuban:
+                          type: string
+                        created_at:
+                          type: string
+                          format: date-time
+                  next_cursor:
+                    type: string
+                    nullable: true
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /internal/virtual-accounts:
+    get:
+      tags: [Internal]
+      summary: List all virtual accounts (platform-wide)
+      description: Paginated list of all virtual accounts across every tenant, as recorded in the VaultNUBAN database.
+      operationId: listAllVirtualAccounts
+      security:
+        - OperatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        "200":
+          description: Virtual accounts across all tenants
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/VirtualAccount'
+                        - type: object
+                          properties:
+                            tenant_name:
+                              type: string
+                  next_cursor:
+                    type: string
+                    nullable: true
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /internal/nomba-virtual-accounts:
+    get:
+      tags: [Internal]
+      summary: List virtual accounts directly from Nomba
+      description: Shows what Nomba's system actually holds, not what VaultNUBAN's database records — used to detect drift.
+      operationId: listNombaVirtualAccounts
+      security:
+        - OperatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CursorParam'
+      responses:
+        "200":
+          description: Nomba-side virtual accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                  next_cursor:
+                    type: string
+                    nullable: true
+                  unavailable:
+                    type: boolean
+                    description: True if the Nomba API rejected the request (e.g. 403)
+                  reason:
+                    type: string
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /internal/webhook-events:
+    get:
+      tags: [Internal]
+      summary: List raw webhook events
+      description: Return the most recent raw webhook payloads received from Nomba, newest first.
+      operationId: listWebhookEvents
+      security:
+        - OperatorAuth: []
+      parameters:
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        "200":
+          description: Raw webhook events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        dedupe_key:
+                          type: string
+                        event_type:
+                          type: string
+                        signature_valid:
+                          type: boolean
+                        status:
+                          type: string
+                        created_at:
+                          type: string
+                          format: date-time
+                        processed_at:
+                          type: string
+                          format: date-time
+                          nullable: true
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /internal/reprocess-suspense:
+    post:
+      tags: [Internal]
+      summary: Reprocess open suspense items
+      description: |
+        Re-runs the matcher against all open `unmatched` suspense items by
+        requerying their session IDs. Any item that now resolves to a virtual
+        account is automatically reassigned.
+      operationId: reprocessSuspense
+      security:
+        - OperatorAuth: []
+      responses:
+        "200":
+          description: Reprocessing summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total:
+                    type: integer
+                  resolved:
+                    type: integer
+                  no_match:
+                    type: integer
+                  no_session:
+                    type: integer
+                  failed:
+                    type: integer
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        item_id:
+                          type: string
+                          format: uuid
+                        transaction_id:
+                          type: string
+                        outcome:
+                          type: string
+                        customer_id:
+                          type: string
+                          format: uuid
+                        error:
+                          type: string
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+  /internal/settings/tier-limits:
+    get:
+      tags: [Internal]
+      summary: Get KYC tier limits
+      operationId: getTierLimits
+      security:
+        - OperatorAuth: []
+      responses:
+        "200":
+          description: Current tier limit configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key:
+                    type: string
+                  value:
+                    type: object
+                    description: Map of tier number to its configured limits
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "500":
+          $ref: '#/components/responses/InternalServerError'
+
+    put:
+      tags: [Internal]
+      summary: Update KYC tier limits
+      operationId: putTierLimits
+      security:
+        - OperatorAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Map of tier number (as string) to its configured limits
+      responses:
+        "200":
+          description: Updated tier limit configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key:
+                    type: string
+                  value:
+                    type: object
+        "400":
+          $ref: '#/components/responses/BadRequest'
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "422":
+          $ref: '#/components/responses/UnprocessableEntity'
         "500":
           $ref: '#/components/responses/InternalServerError'
